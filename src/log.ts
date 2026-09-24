@@ -1,4 +1,4 @@
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SyncEvent } from "./types.js";
 
@@ -9,6 +9,8 @@ function logPath(dir: string): string {
 }
 
 export async function logEvent(dir: string, event: SyncEvent): Promise<void> {
+  // Ensure cache dir exists before any file I/O (first-run safety)
+  await mkdir(dir, { recursive: true });
   await appendFile(logPath(dir), JSON.stringify(event) + "\n", "utf8");
 }
 

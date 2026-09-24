@@ -1,4 +1,4 @@
-import { readFile, writeFile, unlink } from "node:fs/promises";
+import { readFile, writeFile, unlink, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { kill } from "node:process";
 import type { LockHandle } from "./types.js";
@@ -11,6 +11,8 @@ function lockPath(dir: string): string {
 
 export async function acquireLock(dir: string): Promise<LockHandle> {
   const path = lockPath(dir);
+  // Ensure cache dir exists before any file I/O (first-run safety)
+  await mkdir(dir, { recursive: true });
   try {
     const raw = await readFile(path, "utf8");
     const existing = JSON.parse(raw) as LockHandle;
