@@ -1,77 +1,63 @@
 # pi-sync
 
-Synchronize your pi state (skills, settings, AGENTS.md, memory DB, sessions) between two laptops on the same LAN.
+Pack and restore your pi state (`~/.pi/agent/` + `~/.pi/memory/memory.db`) as a single tar.gz. Two commands, one file.
 
-## How it works
+## Commands
 
-- Each laptop runs this extension as part of pi.
-- Each advertises itself via mDNS as `_pi-sync._tcp.local` on port 7333.
-- When you run `/sync`, the extension rsyncs the relevant paths to the peer over SSH (using a dedicated ed25519 keypair).
-- The SQLite memory DB is snapshotted via `.backup` before transfer and atomic-renamed on the receiver — safe even while pi is running.
-- Conflicts are detected against a per-peer baseline and reported via TUI notification.
+```
+/extract [path]    # pack ~/.pi/ into a tar.gz; cwd default, or <path>
+/install [path]    # restore ~/.pi/ from a tar.gz; cwd default, or <path>
+```
+
+If you omit the path, `/extract` writes `./pi-state.tar.gz` in the current directory and `/install` reads it back from there.
+
+## What's in the bundle
+
+- `agent/` — skills, settings.json, AGENTS.md, extensions, trust.json, etc.
+- `memory/memory.db` — SQLite snapshot (consistent under live reads/writes)
+
+Always excluded:
+- `auth.json`
+- `*.bak`
+- `*.db-wal`, `*.db-shm`
+- `node_modules`
 
 ## Install
 
-### On both laptops
-
 ```bash
-# Install dependencies
-sudo pacman -S openssh rsync sqlite avahi nss-mdns   # Arch/CachyOS
+sudo pacman -S rsync sqlite    # rsync for staging, sqlite3 for memory.db snapshot
 
-# Make sure sshd is running (one-time)
-sudo systemctl enable --now sshd
-
-# Clone or copy this repo
-git clone <repo-url> ~/Documents/GulanesKorp/PiSync
 cd ~/Documents/GulanesKorp/PiSync
 npm install
-```
 
-### Link the extension into pi
-
-Pi auto-discovers extensions from `~/.pi/agent/extensions/`, looking for `*.ts` files or `*/index.ts`. The entry point is `src/index.ts`, so symlink the `src/` directory:
-
-```bash
+# Link the extension into pi:
 ln -s "$(pwd)/src" ~/.pi/agent/extensions/pi-sync
+
+# Or add to ~/.pi/agent/settings.json:
+#   "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync/src/index.ts"]
 ```
 
-Or, if you prefer a settings.json entry:
-
-```json
-{
-  "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync/src/index.ts"]
-}
-```
-
-No build step required — pi loads TypeScript directly via jiti. Restart pi or run `/reload` for the new command to register.
-
-### One-time setup (run on EACH laptop pointing at the OTHER)
-
-In pi:
-
-```
-/sync-setup <other-laptop>.local
-```
-
-You may be prompted for the remote's SSH password (one-time key install).
+Restart pi or run `/reload` so the commands register.
 
 ## Use
 
-```
-/sync                    # full bidirectional sync
-/sync-push <peer>        # this → peer
-/sync-pull <peer>        # peer → this
-/sync-peers              # show discovered peers
-/sync-status             # last sync info
+```bash
+# In pi, from any directory:
+/extract                       # writes ./pi-state.tar.gz
+
+# Copy the tar.gz to another machine (scp, USB, whatever), then:
+/install /path/to/pi-state.tar.gz
 ```
 
-## Run the tests
+`/install` backs up any existing `~/.pi/agent/` to `~/.pi/agent.bak-<timestamp>` and the existing `memory.db` to `memory.db.bak-<timestamp>` before restoring — no silent overwrites.
+
+## Requirements
+
+- `tar`, `rsync`, `sqlite3` on PATH
+- No npm runtime deps (uses Node stdlib + system tools)
+
+## Test
 
 ```bash
-cd ~/Documents/GulanesKorp/PiSync
 npm test
 ```
-
-## Files
-
-See [SPEC.md](./SPEC.md) for the design, [PLAN.md](./PLAN.md) for the implementation plan.
