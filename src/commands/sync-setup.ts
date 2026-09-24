@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { readFile, appendFile } from "node:fs/promises";
+import { readFile, appendFile, writeFile } from "node:fs/promises";
 import { saveConfig, defaultConfigPath } from "../config.js";
 import { generateKeyArgs, buildSshArgs } from "../ssh.js";
 import type { PiSyncConfig } from "../types.js";
@@ -53,10 +53,17 @@ export async function setupPeer(remoteHost: string): Promise<{ pubkey: string; c
       "-i", pubPath,
       remoteHost,
     ]);
-  } catch {
-    throw new Error(
-      `ssh-copy-id failed. Manually add this public key to ${remoteHost}:~/.ssh/authorized_keys:\n\n${await readPubKey(pubPath)}\n\nThen re-run /sync-setup.`,
-    );
+  } catch (err) {
+    // ssh-copy-id likely failed because the Mac has PasswordAuthentication=no
+    // (default on modern macOS) or sshd isn't running. Write the pubkey to a
+    // file and surface a single-line error — multi-line notify() messages
+    // get mangled into escape codes by pi's TUI renderer.
+    const pubkeyPath = "/tmp/pi-sync-pubkey.txt";
+    await writeFile(pubkeyPath, await readPubKey(pubPath), { mode: 0o600 });
+    const hint = (err as Error).message?.includes("Connection refused")
+      ? `sshd doesn't appear to be running on ${remoteHost}. Enable it with: sudo systemsetup -setremotelogin on`
+      : `Append the contents of ${pubkeyPath} to ${remoteHost}:~/.ssh/authorized_keys, then re-run /sync-setup`;
+    throw new Error(`ssh-copy-id failed. ${hint}`);
   }
 
   // 4. Verify
