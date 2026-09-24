@@ -1,77 +1,59 @@
-# pi-sync
+# pi-sync v2
 
-Synchronize your pi state (skills, settings, AGENTS.md, memory DB, sessions) between two laptops on the same LAN.
+Extract your pi state — settings, skills (all locations), extensions, the git
+package store, and the LaPis memory DB — into **one portable archive**, and
+import it on another PC. You move the file yourself (USB, scp, cloud folder).
 
-## How it works
+## What ships
 
-- Each laptop runs this extension as part of pi.
-- Each advertises itself via mDNS as `_pi-sync._tcp.local` on port 7333.
-- When you run `/sync`, the extension rsyncs the relevant paths to the peer over SSH (using a dedicated ed25519 keypair).
-- The SQLite memory DB is snapshotted via `.backup` before transfer and atomic-renamed on the receiver — safe even while pi is running.
-- Conflicts are detected against a per-peer baseline and reported via TUI notification.
+| Source | In bundle |
+|---|---|
+| `~/.pi/agent/{skills,extensions,git,bin}` | `pi/agent/…` |
+| `~/.pi/agent/{settings.json,AGENTS.md,trust.json,auth.json,models.json,models-store.json}` | `pi/agent/…` |
+| `~/.agents/skills` | `agents/skills` |
+| `~/.pi/memory/memory.db` (LaPis) | `memory/memory.db` (consistent SQLite snapshot) |
 
-## Install
-
-### On both laptops
-
-```bash
-# Install dependencies
-sudo pacman -S openssh rsync sqlite avahi nss-mdns   # Arch/CachyOS
-
-# Make sure sshd is running (one-time)
-sudo systemctl enable --now sshd
-
-# Clone or copy this repo
-git clone <repo-url> ~/Documents/GulanesKorp/PiSync
-cd ~/Documents/GulanesKorp/PiSync
-npm install
-```
-
-### Link the extension into pi
-
-Pi auto-discovers extensions from `~/.pi/agent/extensions/`, looking for `*.ts` files or `*/index.ts`. The entry point is `src/index.ts`, so symlink the `src/` directory:
-
-```bash
-ln -s "$(pwd)/src" ~/.pi/agent/extensions/pi-sync
-```
-
-Or, if you prefer a settings.json entry:
-
-```json
-{
-  "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync/src/index.ts"]
-}
-```
-
-No build step required — pi loads TypeScript directly via jiti. Restart pi or run `/reload` for the new command to register.
-
-### One-time setup (run on EACH laptop pointing at the OTHER)
-
-In pi:
-
-```
-/sync-setup <other-laptop>.local
-```
-
-You may be prompted for the remote's SSH password (one-time key install).
+Never ships: sessions, claude-sessions, `*.bak`, `*.db-wal/shm`, `node_modules`,
+`pistats.db`.
 
 ## Use
 
 ```
-/sync                    # full bidirectional sync
-/sync-push <peer>        # this → peer
-/sync-pull <peer>        # peer → this
-/sync-peers              # show discovered peers
-/sync-status             # last sync info
+/pisync extract [dir] [--no-memory] [--no-auth] [--no-agents-skills]
+/pisync import <archive>
+/pisync
 ```
 
-## Run the tests
+Extract writes `~/Downloads/pisync-<date>.tar.zst` (`.tar.gz` if zstd is
+missing). Import backs up current state to
+`~/.pi/cache/pi-sync/pre-import-<ts>/`, restores the bundle, and atomically
+swaps the memory DB (stale WAL/SHM removed). Restart pi afterwards.
+
+## On a PC without pi-sync
+
+The bundle is self-describing — `RESTORE.md` inside has plain-shell restore
+steps (tar + cp + sqlite3).
+
+## Install
 
 ```bash
-cd ~/Documents/GulanesKorp/PiSync
-npm test
+git clone <repo-url> ~/Documents/GulanesKorp/PiSync
+cd ~/Documents/GulanesKorp/PiSync && npm install
+ln -s "$(pwd)/src" ~/.pi/agent/extensions/pi-sync
 ```
 
-## Files
+(or add the path to `src/index.ts` to `extensions` in `~/.pi/agent/settings.json`)
 
-See [SPEC.md](./SPEC.md) for the design, [PLAN.md](./PLAN.md) for the implementation plan.
+Requires: `tar` (any modern distro), `sqlite3` (memory DB), `zstd` (optional —
+gzip fallback). Restart pi or run `/reload`.
+
+## Security
+
+`auth.json` (API keys) ships by default — treat the archive like a credential
+file. Use `--no-auth` to leave it out.
+
+## Tests
+
+```bash
+npm test
+```
