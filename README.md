@@ -29,15 +29,21 @@ npm install
 
 ### Link the extension into pi
 
-From `~/Documents/GulanesKorp/PiSync`:
+Pi auto-discovers extensions from `~/.pi/agent/extensions/`, looking for `*.ts` files or `*/index.ts`. The entry point is `src/index.ts`, so symlink the `src/` directory:
 
 ```bash
-npm run build
-# Either symlink into ~/.pi/agent/extensions/:
-ln -s "$(pwd)" ~/.pi/agent/extensions/pi-sync
-# Or add to ~/.pi/agent/settings.json under "extensions":
-#   "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync"]
+ln -s "$(pwd)/src" ~/.pi/agent/extensions/pi-sync
 ```
+
+Or, if you prefer a settings.json entry:
+
+```json
+{
+  "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync/src/index.ts"]
+}
+```
+
+No build step required — pi loads TypeScript directly via jiti. Restart pi or run `/reload` for the new command to register.
 
 ### One-time setup (run on EACH laptop pointing at the OTHER)
 
