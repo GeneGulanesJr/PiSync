@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runExtract } from "../src/bundle.js";
+import { runImport } from "../src/restore.js";
 
 const execFile = promisify(execFileCb);
 
@@ -65,5 +66,25 @@ describe("runExtract", () => {
     expect(paths).not.toContain("memory/memory.db");
     expect(paths).not.toContain("pi/agent/auth.json");
     expect(paths).toContain("pi/agent/skills");
+  });
+});
+
+describe("runImport", () => {
+  it("round-trips state into a fresh home", async () => {
+    const extract = await runExtract({ outDir, home });
+    const home2 = await mkdtemp(join(tmpdir(), "pisync-target-"));
+    try {
+      const imported = await runImport(extract.archivePath, { home: home2 });
+      expect(imported.restored).toContain(join(home2, ".pi/agent/settings.json"));
+      expect(await readFile(join(home2, ".pi/agent/settings.json"), "utf8")).toContain("defaultModel");
+      expect(await readFile(join(home2, ".agents/skills/other/SKILL.md"), "utf8")).toBe("# other");
+      if (dbReady) {
+        const { stdout } = await execFile("sqlite3", [join(home2, ".pi/memory/memory.db"), "SELECT x FROM t;"]);
+        expect(stdout.trim()).toBe("42");
+      }
+      expect(imported.backupDir).toContain("pre-import-");
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
   });
 });
