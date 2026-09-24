@@ -17,7 +17,7 @@
 **Files:**
 - Commit: `SPEC.md` (already rewritten)
 
-- [ ] **Step 1: Create feature branch and commit the spec**
+- [x] **Step 1: Create feature branch and commit the spec**
 
 ```bash
 cd ~/Documents/GulanesKorp/PiSync
@@ -26,7 +26,7 @@ git add SPEC.md PLAN.md
 git commit -m "docs: v2 spec + implementation plan — pivot from LAN sync to extract/import"
 ```
 
-- [ ] **Step 2: Verify green baseline**
+- [x] **Step 2: Verify green baseline**
 
 Run: `npm test 2>&1 | tail -5 && npm run build 2>&1 | tail -3`
 Expected: all existing tests pass, build succeeds (old code still intact).
@@ -42,7 +42,7 @@ Expected: all existing tests pass, build succeeds (old code still intact).
 - Modify: `package.json` (drop `bonjour-service`, bump 0.2.0, new description)
 - Modify: `src/index.ts` (temporary minimal stub — replaced in Task 8)
 
-- [ ] **Step 1: Delete sync-era source and tests**
+- [x] **Step 1: Delete sync-era source and tests**
 
 ```bash
 cd ~/Documents/GulanesKorp/PiSync
@@ -54,7 +54,7 @@ git rm -r src/commands tests 2>/dev/null || true
 
 (If `git rm tests/...` errors on a file that doesn't exist, skip that file. The final `git rm -r` cleans the now-empty `src/commands/` and any remaining stale tests.)
 
-- [ ] **Step 2: Replace `src/index.ts` with a minimal stub**
+- [x] **Step 2: Replace `src/index.ts` with a minimal stub**
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-- [ ] **Step 3: Update `package.json`**
+- [x] **Step 3: Update `package.json`**
 
 ```json
 {
@@ -94,12 +94,12 @@ export default function (pi: ExtensionAPI) {
 
 Then: `rm -rf node_modules package-lock.json && npm install` (drops `bonjour-service` from the tree).
 
-- [ ] **Step 4: Verify green with zero sync code**
+- [x] **Step 4: Verify green with zero sync code**
 
 Run: `npm test 2>&1 | tail -5 && npm run build 2>&1 | tail -3`
 Expected: no tests (or only `tests/log.test.ts`, `tests/manifest.test.ts`, `tests/sqlite-snapshot.test.ts` if kept — log/manifest tests stay for now), build passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -115,7 +115,7 @@ git commit -m "feat!: remove LAN sync machinery (mDNS/SSH/rsync/lock) — v2 ext
 - Create: `src/paths.ts`
 - Create: `tests/paths.test.ts`
 
-- [ ] **Step 1: Rewrite `src/types.ts`**
+- [x] **Step 1: Rewrite `src/types.ts`**
 
 ```typescript
 export interface BundleSpecEntry {
@@ -177,7 +177,7 @@ export interface OperationEvent {
 }
 ```
 
-- [ ] **Step 2: Write the failing test `tests/paths.test.ts`**
+- [x] **Step 2: Write the failing test `tests/paths.test.ts`**
 
 ```typescript
 import { describe, expect, it } from "vitest";
@@ -232,12 +232,12 @@ describe("BUNDLE_EXCLUDES", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `npx vitest run tests/paths.test.ts`
 Expected: FAIL — `Cannot find module '../src/paths.js'`.
 
-- [ ] **Step 4: Create `src/paths.ts`**
+- [x] **Step 4: Create `src/paths.ts`**
 
 ```typescript
 import { homedir } from "node:os";
@@ -299,12 +299,12 @@ export function defaultHome(): string {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run tests/paths.test.ts`
 Expected: PASS (all).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/types.ts src/paths.ts tests/paths.test.ts
@@ -319,7 +319,7 @@ git commit -m "feat(paths): bundle spec table — single source of truth for wha
 - Modify: `src/manifest.ts` (replace `buildManifest` walker with `copyFiltered`; keep `matchesGlob`)
 - Modify: `tests/manifest.test.ts` (keep glob tests, replace walker tests)
 
-- [ ] **Step 1: Write the failing tests (replace walker tests in `tests/manifest.test.ts`, keep the existing `matchesGlob` describe block)**
+- [x] **Step 1: Write the failing tests (replace walker tests in `tests/manifest.test.ts`, keep the existing `matchesGlob` describe block)**
 
 ```typescript
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
@@ -383,12 +383,12 @@ describe("copyFiltered", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/manifest.test.ts`
 Expected: FAIL — `copyFiltered` is not exported.
 
-- [ ] **Step 3: Rewrite `src/manifest.ts` (keep `matchesGlob` exactly as-is at the bottom)**
+- [x] **Step 3: Rewrite `src/manifest.ts` (keep `matchesGlob` exactly as-is at the bottom)**
 
 ```typescript
 import { cp, readdir, stat } from "node:fs/promises";
@@ -481,12 +481,12 @@ export function matchesGlob(s: string, pattern: string): boolean {
 
 Note: the old `buildManifest`/`ManifestEntry`/`ManifestOptions` exports are gone — `src/log.ts` imports only `SyncEvent` from types (fixed in Task 2's types rewrite; update its import in Task 8). If `tests/manifest.test.ts` references `buildManifest`, delete those tests in Step 1 (they were replaced above).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/manifest.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/manifest.ts tests/manifest.test.ts
@@ -501,7 +501,7 @@ git commit -m "feat(manifest): copyFiltered staging engine — excludes + symlin
 - Create: `src/bundle-manifest.ts`
 - Create: `tests/bundle-manifest.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, it } from "vitest";
@@ -549,12 +549,12 @@ function validManifest(): BundleManifest {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/bundle-manifest.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Create `src/bundle-manifest.ts`**
+- [x] **Step 3: Create `src/bundle-manifest.ts`**
 
 ```typescript
 import { hostname } from "node:os";
@@ -602,12 +602,12 @@ export function validateManifest(raw: unknown): {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/bundle-manifest.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bundle-manifest.ts tests/bundle-manifest.test.ts
@@ -622,7 +622,7 @@ git commit -m "feat(manifest): schema-1 bundle manifest builder + validator"
 - Create: `src/archive.ts`
 - Create: `tests/archive.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
@@ -665,12 +665,12 @@ describe.each(["zstd", "gzip"] as const)("packArchive (%s)", (compression) => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/archive.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Create `src/archive.ts`**
+- [x] **Step 3: Create `src/archive.ts`**
 
 ```typescript
 import { spawn } from "node:child_process";
@@ -744,12 +744,12 @@ export async function unpackArchive(archivePath: string, destDir: string): Promi
 
 Remove the `void dirname;` line and the `dirname` import if your linter complains — it is not needed; included only to make the file's intent explicit. Prefer deleting both.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/archive.test.ts`
 Expected: PASS (both compressions; skips cleanly only if `tar` is missing — it isn't on CachyOS).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/archive.ts tests/archive.test.ts
@@ -764,7 +764,7 @@ git commit -m "feat(archive): tar pack/list/unpack with explicit compressor + at
 - Modify: `src/sqlite-snapshot.ts` (add `swapDatabase`, keep existing functions)
 - Modify: `tests/sqlite-snapshot.test.ts` (add swap tests)
 
-- [ ] **Step 1: Add failing tests to `tests/sqlite-snapshot.test.ts`**
+- [x] **Step 1: Add failing tests to `tests/sqlite-snapshot.test.ts`**
 
 ```typescript
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
@@ -805,12 +805,12 @@ describe("swapDatabase", () => {
 
 (If the existing test file already declares `root`/hooks, merge these describe blocks into it instead of duplicating variables.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/sqlite-snapshot.test.ts`
 Expected: FAIL — `swapDatabase` is not exported.
 
-- [ ] **Step 3: Add to `src/sqlite-snapshot.ts`**
+- [x] **Step 3: Add to `src/sqlite-snapshot.ts`**
 
 ```typescript
 import { unlink } from "node:fs/promises";
@@ -829,12 +829,12 @@ export async function swapDatabase(stagedDb: string, destDb: string): Promise<vo
 
 (`rename` is already imported at the top of the file.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/sqlite-snapshot.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/sqlite-snapshot.ts tests/sqlite-snapshot.test.ts
@@ -850,7 +850,7 @@ git commit -m "feat(db): swapDatabase — atomic rename + stale WAL/SHM removal"
 - Create: `tests/bundle.test.ts`
 - Modify: `src/log.ts` (event type swap: `SyncEvent` → `OperationEvent`)
 
-- [ ] **Step 1: Update `src/log.ts` to the new event type (one-line change each)**
+- [x] **Step 1: Update `src/log.ts` to the new event type (one-line change each)**
 
 ```typescript
 import { appendFile, readFile, mkdir } from "node:fs/promises";
@@ -885,7 +885,7 @@ export async function readLog(dir: string): Promise<OperationEvent[]> {
 
 (Delete `tests/log.test.ts` sync-shaped cases or update them to `OperationEvent` — prefer updating: same assertions with `{ ts, op: "extract", status: "done" }` events.)
 
-- [ ] **Step 2: Write the failing integration test `tests/bundle.test.ts`**
+- [x] **Step 2: Write the failing integration test `tests/bundle.test.ts`**
 
 Uses a fake `$HOME` sandbox and a tiny fixture SQLite DB. Skips if the `sqlite3` CLI is absent.
 
@@ -968,12 +968,12 @@ describe("runExtract", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `npx vitest run tests/bundle.test.ts`
 Expected: FAIL — `runExtract` (and `runImport`) not found.
 
-- [ ] **Step 4: Create `src/bundle.ts`**
+- [x] **Step 4: Create `src/bundle.ts`**
 
 ```typescript
 import { execFile } from "node:child_process";
@@ -1161,12 +1161,12 @@ Notes for the implementer:
 - The `entries.map(({ files: _f, bytes: _b, ...rest }) => rest)` destructure satisfies `buildBundleManifest`'s input type; sizes are then re-attached via `manifest.entries = entries`.
 - Move the `dirname as dirname_` import up with the other `node:path` import (`join, dirname as dirname_`); drop the `void readdir;` and the unused `readdir` import if unused.
 
-- [ ] **Step 5: Run extract-only tests**
+- [x] **Step 5: Run extract-only tests**
 
 Run: `npx vitest run tests/bundle.test.ts -t "runExtract"`
 Expected: the two `runExtract` tests PASS; the round-trip test FAILS (no `runImport` yet — Task 8).
 
-- [ ] **Step 6: Commit (extract, without import)**
+- [x] **Step 6: Commit (extract, without import)**
 
 ```bash
 git add src/bundle.ts src/log.ts tests/bundle.test.ts src/types.ts
@@ -1182,7 +1182,7 @@ git commit -m "feat(bundle): runExtract — stage, snapshot DB, manifest, RESTOR
 - Modify: `src/types.ts` (add `home?: string` to `ImportOptions`)
 - Rewrite: `src/index.ts`
 
-- [ ] **Step 1: Add `ImportOptions` to `src/types.ts`**
+- [x] **Step 1: Add `ImportOptions` to `src/types.ts`**
 
 ```typescript
 export interface ImportOptions {
@@ -1190,7 +1190,7 @@ export interface ImportOptions {
 }
 ```
 
-- [ ] **Step 2: Write `src/restore.ts`**
+- [x] **Step 2: Write `src/restore.ts`**
 
 ```typescript
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
@@ -1282,12 +1282,12 @@ void readdir; // remove if unused
 
 (Delete the `void readdir;` line and unused import — prefer clean imports.)
 
-- [ ] **Step 4: Run the full bundle test file**
+- [x] **Step 4: Run the full bundle test file**
 
 Run: `npx vitest run tests/bundle.test.ts`
 Expected: PASS including the round-trip test (`defaultModel` content lands in home2; SQLite `SELECT` returns 42 when sqlite3 present).
 
-- [ ] **Step 5: Rewrite `src/index.ts` — command dispatch**
+- [x] **Step 5: Rewrite `src/index.ts` — command dispatch**
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -1373,12 +1373,12 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-- [ ] **Step 6: Full suite + build**
+- [x] **Step 6: Full suite + build**
 
 Run: `npm test 2>&1 | tail -6 && npm run build 2>&1 | tail -3`
 Expected: all tests PASS, build clean.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -1392,7 +1392,7 @@ git commit -m "feat: runImport + /pisync command dispatch (extract|import|help)"
 **Files:**
 - Rewrite: `README.md`
 
-- [ ] **Step 1: Rewrite `README.md`**
+- [x] **Step 1: Rewrite `README.md`**
 
 ````markdown
 # pi-sync v2
@@ -1453,7 +1453,7 @@ npm test
 ```
 ````
 
-- [ ] **Step 2: Live smoke test (real HOME, real DB — this is the acceptance run)**
+- [x] **Step 2: Live smoke test (real HOME, real DB — this is the acceptance run)**
 
 Run in pi: `/pisync extract`
 Expected: notify shows `~/Downloads/pisync-<today>.tar.zst`, ~500–800 MB, entries count ≥ 8.
@@ -1471,7 +1471,7 @@ rm -rf "$TMP_home"
 
 (Do NOT run `/pisync import` against the real HOME during the smoke test — the sandboxed round-trip test in `tests/bundle.test.ts` is the import verification.)
 
-- [ ] **Step 3: Final commit**
+- [x] **Step 3: Final commit**
 
 ```bash
 git add README.md
