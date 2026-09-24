@@ -1,4 +1,5 @@
 import type { RsyncItem, RsyncDirFlag } from "./types.js";
+export type { RsyncItem } from "./types.js";
 
 // rsync itemize format: "<dir><type><attrs> <size-or-mode> <date-or-empty> <path>"
 // example: ">f+++++++++ skills/a/SKILL.md"
