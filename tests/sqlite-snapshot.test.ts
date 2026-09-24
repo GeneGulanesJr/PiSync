@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { sqliteAvailable } from "../src/sqlite-snapshot.js";
+import { sqliteAvailable, swapDatabase } from "../src/sqlite-snapshot.js";
 
 let tmp: string;
 
@@ -28,5 +28,29 @@ describe("sqlite-snapshot", () => {
   it("sqliteAvailable returns a Promise<boolean>", async () => {
     const r = await sqliteAvailable();
     expect(typeof r).toBe("boolean");
+  });
+});
+
+describe("swapDatabase", () => {
+  it("replaces the destination and removes stale WAL/SHM sidecars", async () => {
+    const dest = join(tmp, "memory.db");
+    await writeFile(dest, "old");
+    await writeFile(`${dest}-wal`, "stale-wal");
+    await writeFile(`${dest}-shm`, "stale-shm");
+    const staged = join(tmp, "import-1.db");
+    await writeFile(staged, "new");
+    await swapDatabase(staged, dest);
+    expect(await readFile(dest, "utf8")).toBe("new");
+    await expect(stat(`${dest}-wal`)).rejects.toThrow();
+    await expect(stat(`${dest}-shm`)).rejects.toThrow();
+  });
+
+  it("works when no sidecars exist", async () => {
+    const dest = join(tmp, "memory.db");
+    await writeFile(dest, "old");
+    const staged = join(tmp, "import-1.db");
+    await writeFile(staged, "new");
+    await swapDatabase(staged, dest);
+    expect(await readFile(dest, "utf8")).toBe("new");
   });
 });

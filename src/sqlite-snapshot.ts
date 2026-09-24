@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { rename } from "node:fs/promises";
+import { rename, unlink } from "node:fs/promises";
 
 /** Returns true if the sqlite3 CLI is on PATH and responds to --version. */
 export async function sqliteAvailable(): Promise<boolean> {
@@ -29,4 +29,15 @@ export async function sqliteSnapshot(dbPath: string, outPath: string): Promise<s
 /** Atomic rename: snapshot over live DB. */
 export async function atomicReplace(src: string, dst: string): Promise<void> {
   await rename(src, dst);
+}
+
+/**
+ * Atomically replace destDb with stagedDb (which must live on the same
+ * filesystem). Deletes stale WAL/SHM sidecars first — replaying a stale WAL
+ * against an imported DB corrupts it. SQLite recreates both on next open.
+ */
+export async function swapDatabase(stagedDb: string, destDb: string): Promise<void> {
+  await unlink(`${destDb}-wal`).catch(() => {});
+  await unlink(`${destDb}-shm`).catch(() => {});
+  await rename(stagedDb, destDb);
 }
