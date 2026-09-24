@@ -1,96 +1,90 @@
-# pi-sync Implementation Plan
+# PiSync v2 — Extract/Import Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Use Sequential mode for planned tasks or Direct mode if subagents aren't available. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a pi extension that synchronizes pi state between two laptops on the same LAN via mDNS discovery + rsync-over-SSH.
+**Goal:** Replace the LAN-sync extension with `/pisync extract` (single portable `tar.zst` of pi state → `~/Downloads`) and `/pisync import <archive>` (validated restore with safety backup and atomic DB swap).
 
-**Architecture:** TypeScript pi extension (single project at `~/Documents/GulanesKorp/PiSync/`). Pure-logic units (`config`, `lock`, `log`, `manifest`, `baseline`, `itemize-parser`) are TDD'd with no I/O. I/O wrappers (`ssh`, `mdns`, `sqlite-snapshot`) wrap system binaries and are TDD'd with mocks. `sync.ts` orchestrates the rsync calls. `commands/*.ts` bind to pi's command system. `index.ts` wires it all together.
+**Architecture:** One registered pi command (`pisync`) dispatching to two pure orchestrators (`runExtract`, `runImport`). A single `bundleSpec()` table owns what ships. Transfer is manual; the archive is self-describing (`manifest.json` + `RESTORE.md`), restorable without pi-sync installed. No runtime npm deps — system `tar` + `sqlite3` do the heavy lifting.
 
-**Tech Stack:** TypeScript, vitest (tests), `bonjour-service` npm (mDNS), `ssh`, `sshd`, `rsync`, `sqlite3` (system binaries).
+**Tech Stack:** TypeScript (ES2022, strict, ESM), Node `fs.cp`/`statfs`/`child_process`, system `tar` + `sqlite3`, vitest. Spec: `SPEC.md` (v2, reviewed).
 
----
-
-## Project layout
-
-```
-~/Documents/GulanesKorp/PiSync/
-├── SPEC.md                   # already exists
-├── PLAN.md                   # this file
-├── README.md
-├── package.json
-├── tsconfig.json
-├── vitest.config.ts
-├── .gitignore
-├── src/
-│   ├── index.ts              # entry; registers commands
-│   ├── types.ts              # all shared types
-│   ├── config.ts             # pi-sync.json load/save
-│   ├── lock.ts               # sync.lock acquire/release
-│   ├── log.ts                # JSONL append logger
-│   ├── manifest.ts           # file walk + exclude + hash
-│   ├── baseline.ts           # last-sync-<peer>.json r/w + conflict detect
-│   ├── itemize-parser.ts     # parse rsync --itemize-changes
-│   ├── mdns.ts               # bonjour-service wrapper
-│   ├── ssh.ts                # ssh preflight, keygen, ssh-copy-id
-│   ├── sqlite-snapshot.ts    # .backup helper
-│   ├── sync.ts               # orchestrator
-│   └── commands/
-│       ├── sync.ts           # /sync handler
-│       ├── sync-push.ts      # /sync-push handler
-│       ├── sync-pull.ts      # /sync-pull handler
-│       ├── sync-peers.ts     # /sync-peers handler
-│       ├── sync-setup.ts     # /sync-setup handler
-│       └── sync-status.ts    # /sync-status handler
-└── tests/
-    ├── config.test.ts
-    ├── lock.test.ts
-    ├── log.test.ts
-    ├── manifest.test.ts
-    ├── baseline.test.ts
-    ├── itemize-parser.test.ts
-    └── sqlite-snapshot.test.ts
-```
-
-## Conventions
-
-- All paths in source use `~/.pi/...` resolved via `os.homedir()`.
-- System binary calls go through `execFile` (no shell injection).
-- All file I/O is async.
-- TDD: every module has a failing test before its implementation.
-- One commit per task.
+**Repo state:** branch `main`, clean tree except modified `SPEC.md`. Test suite: `npm test` (vitest run). Build: `npm run build` (tsc).
 
 ---
 
-## Phase 1: Foundation
-
-### Task 1: Project scaffold
+### Task 0: Branch and commit the spec
 
 **Files:**
-- Create: `package.json`
-- Create: `tsconfig.json`
-- Create: `vitest.config.ts`
-- Create: `.gitignore`
-- Create: `README.md`
-- Create: `src/types.ts` (empty stub)
+- Commit: `SPEC.md` (already rewritten)
 
-- [ ] **Step 1: Create `package.json`**
+- [ ] **Step 1: Create feature branch and commit the spec**
+
+```bash
+cd ~/Documents/GulanesKorp/PiSync
+git checkout -b feat/v2-extract-import
+git add SPEC.md PLAN.md
+git commit -m "docs: v2 spec + implementation plan — pivot from LAN sync to extract/import"
+```
+
+- [ ] **Step 2: Verify green baseline**
+
+Run: `npm test 2>&1 | tail -5 && npm run build 2>&1 | tail -3`
+Expected: all existing tests pass, build succeeds (old code still intact).
+
+---
+
+### Task 1: Rip out the sync machinery
+
+**Files:**
+- Delete: `src/mdns.ts`, `src/ssh.ts`, `src/lock.ts`, `src/sync.ts`, `src/itemize-parser.ts`, `src/baseline.ts`, `src/config.ts`
+- Delete: `src/commands/sync.ts`, `src/commands/sync-push.ts`, `src/commands/sync-pull.ts`, `src/commands/sync-peers.ts`, `src/commands/sync-setup.ts`, `src/commands/sync-status.ts`
+- Delete: `tests/mdns.test.ts`, `tests/ssh.test.ts`, `tests/lock.test.ts`, `tests/itemize-parser.test.ts`, `tests/baseline.test.ts`, `tests/config.test.ts`, `tests/integration.test.ts`, and any `tests/sync*.test.ts`
+- Modify: `package.json` (drop `bonjour-service`, bump 0.2.0, new description)
+- Modify: `src/index.ts` (temporary minimal stub — replaced in Task 8)
+
+- [ ] **Step 1: Delete sync-era source and tests**
+
+```bash
+cd ~/Documents/GulanesKorp/PiSync
+git rm src/mdns.ts src/ssh.ts src/lock.ts src/sync.ts src/itemize-parser.ts src/baseline.ts src/config.ts
+git rm src/commands/sync.ts src/commands/sync-push.ts src/commands/sync-pull.ts src/commands/sync-peers.ts src/commands/sync-setup.ts src/commands/sync-status.ts
+git rm tests/mdns.test.ts tests/ssh.test.ts tests/lock.test.ts tests/itemize-parser.test.ts tests/baseline.test.ts tests/config.test.ts tests/integration.test.ts
+git rm -r src/commands tests 2>/dev/null || true
+```
+
+(If `git rm tests/...` errors on a file that doesn't exist, skip that file. The final `git rm -r` cleans the now-empty `src/commands/` and any remaining stale tests.)
+
+- [ ] **Step 2: Replace `src/index.ts` with a minimal stub**
+
+```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand("pisync", {
+    description: "Extract pi state to a portable archive / import on another PC",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("pi-sync v2: not wired up yet.", "info");
+    },
+  });
+}
+```
+
+- [ ] **Step 3: Update `package.json`**
 
 ```json
 {
   "name": "pi-sync",
-  "version": "0.1.0",
-  "description": "Synchronize pi state between two laptops on the same LAN",
+  "version": "0.2.0",
+  "description": "Extract pi state (settings, skills, memory) to a portable archive and import it on another PC",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "bonjour-service": "^1.2.0"
-  },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
@@ -98,657 +92,352 @@
 }
 ```
 
-- [ ] **Step 2: Create `tsconfig.json`**
+Then: `rm -rf node_modules package-lock.json && npm install` (drops `bonjour-service` from the tree).
 
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "esModuleInterop": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true
-  },
-  "include": ["src/**/*"]
-}
-```
+- [ ] **Step 4: Verify green with zero sync code**
 
-- [ ] **Step 3: Create `vitest.config.ts`**
+Run: `npm test 2>&1 | tail -5 && npm run build 2>&1 | tail -3`
+Expected: no tests (or only `tests/log.test.ts`, `tests/manifest.test.ts`, `tests/sqlite-snapshot.test.ts` if kept — log/manifest tests stay for now), build passes.
 
-```typescript
-import { defineConfig } from "vitest/config";
-
-export default defineConfig({
-  test: {
-    include: ["tests/**/*.test.ts"],
-    environment: "node",
-  },
-});
-```
-
-- [ ] **Step 4: Create `.gitignore`**
-
-```
-node_modules/
-dist/
-*.log
-.DS_Store
-```
-
-- [ ] **Step 5: Create `README.md` (skeleton)**
-
-```markdown
-# pi-sync
-
-Synchronize pi state between two laptops on the same LAN.
-
-See [SPEC.md](./SPEC.md) for the full design.
-
-## Install (dev)
+- [ ] **Step 5: Commit**
 
 ```bash
-cd ~/Documents/GulanesKorp/PiSync
-npm install
-npm test
-```
-
-## Use
-
-Once installed as a pi extension:
-
-```
-/sync-setup <remote-host>   # one-time
-/sync                       # bidirectional sync
-/sync-push <peer>           # one-way this → peer
-/sync-pull <peer>           # one-way peer → this
-/sync-peers                 # list discovered peers
-/sync-status                # last sync info
-```
-
-## Requirements
-
-- Linux (tested on CachyOS)
-- `ssh`, `rsync`, `sqlite3`, `sshd` available on both laptops
-- Both laptops on the same LAN broadcast domain (for mDNS)
-```
-
-- [ ] **Step 6: Create empty `src/types.ts`**
-
-```typescript
-// All shared types. Populated in Task 2.
-export {};
-```
-
-- [ ] **Step 7: Install dependencies**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm install`
-Expected: `node_modules/` populated, no errors.
-
-- [ ] **Step 8: Initialize git and commit**
-
-```bash
-cd ~/Documents/GulanesKorp/PiSync
-git init
-git add .
-git commit -m "chore: scaffold pi-sync project"
+git add -A
+git commit -m "feat!: remove LAN sync machinery (mDNS/SSH/rsync/lock) — v2 extract/import"
 ```
 
 ---
 
-### Task 2: types.ts + config.ts (TDD)
+### Task 2: Types + bundle spec table (`src/types.ts`, `src/paths.ts`)
 
 **Files:**
-- Create: `src/types.ts`
-- Test: `tests/config.test.ts`
-- Create: `src/config.ts`
+- Modify: `src/types.ts` (full rewrite)
+- Create: `src/paths.ts`
+- Create: `tests/paths.test.ts`
 
-- [ ] **Step 1: Write the failing test for config**
-
-`tests/config.test.ts`:
+- [ ] **Step 1: Rewrite `src/types.ts`**
 
 ```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { loadConfig, saveConfig, defaultConfigPath, type PiSyncConfig } from "../src/config.js";
-
-let tmp: string;
-
-beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pi-sync-test-"));
-});
-
-afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
-});
-
-describe("config", () => {
-  it("returns null when file does not exist", async () => {
-    const result = await loadConfig(join(tmp, "missing.json"));
-    expect(result).toBeNull();
-  });
-
-  it("round-trips a config object", async () => {
-    const path = join(tmp, "config.json");
-    const cfg: PiSyncConfig = {
-      peer: "laptop-b.local",
-      sshKey: "~/.ssh/pi-sync-ed25519",
-      sshPort: 22,
-      rsyncPort: 22,
-      syncPaths: ["default"],
-      excludePatterns: [],
-    };
-    await saveConfig(path, cfg);
-    const loaded = await loadConfig(path);
-    expect(loaded).toEqual(cfg);
-  });
-
-  it("rejects config missing required fields", async () => {
-    const path = join(tmp, "bad.json");
-    await writeFile(path, JSON.stringify({ peer: "x" }));
-    await expect(loadConfig(path)).rejects.toThrow(/sshKey/);
-  });
-
-  it("defaultConfigPath points to ~/.pi/agent/pi-sync.json", () => {
-    expect(defaultConfigPath()).toMatch(/\.pi\/agent\/pi-sync\.json$/);
-  });
-});
-```
-
-- [ ] **Step 2: Run the test; expect failure**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- config`
-Expected: FAIL with "Cannot find module '../src/config.js'"
-
-- [ ] **Step 3: Implement `src/types.ts`**
-
-```typescript
-export interface PiSyncConfig {
-  peer: string;
-  sshKey: string;
-  sshPort: number;
-  rsyncPort: number;
-  syncPaths: string[];
-  excludePatterns: string[];
+export interface BundleSpecEntry {
+  source: string;      // ~-form source path on this machine
+  bundlePath: string;  // path inside the bundle root
+  dest: string;        // ~-form destination on the target machine
+  kind: "dir" | "file";
+  sqlite?: boolean;    // memory DB: snapshot on extract, atomic swap on import
+  skipFlag?: "no-memory" | "no-auth" | "no-agents-skills"; // extract flag that omits this entry
 }
 
-export interface PeerInfo {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
+export interface BundleManifestEntry {
+  bundlePath: string;
+  dest: string;
+  kind: "dir" | "file";
+  files: number;
+  bytes: number;
+  sqlite?: boolean;
+}
+
+export interface BundleManifest {
+  schema: 1;
+  createdAt: string; // ISO
+  hostname: string;
   piVersion: string;
-  lastSeen: number; // ms epoch
+  pisyncVersion: string;
+  compression: "zstd" | "gzip";
+  entries: BundleManifestEntry[];
+  totals: { files: number; bytes: number };
 }
 
-export interface Baseline {
-  peerId: string;
-  lastSyncMs: number;
-  // map from relative path to mtime_ms of the version that was synced
-  mtimes: Record<string, number>;
+export interface ExtractOptions {
+  outDir?: string;  // default ~/Downloads; ~-form ok
+  noMemory?: boolean;
+  noAuth?: boolean;
+  noAgentsSkills?: boolean;
 }
 
-export type SyncDirection = "push" | "pull";
+export interface ExtractResult {
+  archivePath: string;
+  compression: "zstd" | "gzip";
+  bytes: number;        // compressed archive size
+  durationMs: number;
+  entries: BundleManifestEntry[];
+}
 
-export interface SyncEvent {
-  ts: string; // ISO
-  peer: string; // peer id
-  direction: SyncDirection;
-  action: "transfer" | "conflict" | "skip" | "error" | "snapshot" | "rename";
-  path: string;
+export interface ImportResult {
+  restored: string[];   // absolute dest paths written
+  skipped: string[];    // bundle entries absent from the archive
+  backupDir: string | null;
+  durationMs: number;
+}
+
+export interface OperationEvent {
+  ts: string;                          // ISO
+  op: "extract" | "import";
+  status: "start" | "done" | "error";
   detail?: Record<string, unknown>;
 }
-
-export interface LockHandle {
-  pid: number;
-  acquiredAt: number;
-}
-
-export interface RsyncItem {
-  direction: RsyncDirFlag;
-  typeFlag: string;       // e.g. "f" for file, "d" for dir
-  attributeFlags: string; // e.g. ".c..t......"
-  sizeOrMode: string;
-  path: string;
-}
-
-export type RsyncDirFlag = ">" | "<" | "*" | "+" | ".";
 ```
 
-- [ ] **Step 4: Implement `src/config.ts`**
+- [ ] **Step 2: Write the failing test `tests/paths.test.ts`**
 
 ```typescript
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { BUNDLE_EXCLUDES, bundleSpec, expandTildeWith, resolveSpec } from "../src/paths.js";
+
+const HOME = "/home/tester";
+
+describe("expandTildeWith", () => {
+  it("expands ~ and ~/ prefixes", () => {
+    expect(expandTildeWith("~", HOME)).toBe(HOME);
+    expect(expandTildeWith("~/.pi/agent/skills", HOME)).toBe(join(HOME, ".pi/agent/skills"));
+  });
+  it("leaves absolute paths alone", () => {
+    expect(expandTildeWith("/tmp/x", HOME)).toBe("/tmp/x");
+  });
+});
+
+describe("bundleSpec", () => {
+  it("covers both skill stores, the git package store, and the memory DB", () => {
+    const spec = bundleSpec();
+    const paths = spec.map((e) => e.bundlePath);
+    expect(paths).toContain("pi/agent/skills");
+    expect(paths).toContain("agents/skills");
+    expect(paths).toContain("pi/agent/git");
+    expect(paths).toContain("memory/memory.db");
+    expect(paths).toContain("pi/agent/auth.json");
+  });
+  it("memory DB entry is flagged sqlite", () => {
+    const db = bundleSpec().find((e) => e.bundlePath === "memory/memory.db")!;
+    expect(db.sqlite).toBe(true);
+    expect(db.skipFlag).toBe("no-memory");
+  });
+});
+
+describe("resolveSpec", () => {
+  it("maps ~-form source and dest to absolute paths under home", () => {
+    const spec = bundleSpec().find((e) => e.bundlePath === "pi/agent/skills")!;
+    const r = resolveSpec(spec, HOME);
+    expect(r.source).toBe(join(HOME, ".pi/agent/skills"));
+    expect(r.dest).toBe(join(HOME, ".pi/agent/skills"));
+    expect(r.bundlePath).toBe("pi/agent/skills");
+  });
+});
+
+describe("BUNDLE_EXCLUDES", () => {
+  it("never ships sessions, bak files, or node_modules", () => {
+    expect(BUNDLE_EXCLUDES).toContain("**/node_modules/**");
+    expect(BUNDLE_EXCLUDES).toContain("**/*.bak");
+    expect(BUNDLE_EXCLUDES).toContain("**/claude-sessions/**");
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `npx vitest run tests/paths.test.ts`
+Expected: FAIL — `Cannot find module '../src/paths.js'`.
+
+- [ ] **Step 4: Create `src/paths.ts`**
+
+```typescript
 import { homedir } from "node:os";
-import type { PiSyncConfig } from "./types.js";
+import { join } from "node:path";
+import type { BundleSpecEntry } from "./types.js";
 
-export function defaultConfigPath(): string {
-  return join(homedir(), ".pi", "agent", "pi-sync.json");
+export function expandTildeWith(p: string, home: string): string {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join(home, p.slice(2));
+  return p;
 }
 
-export async function loadConfig(path: string = defaultConfigPath()): Promise<PiSyncConfig | null> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  validate(parsed);
-  return parsed as unknown as PiSyncConfig;
+export const BUNDLE_EXCLUDES: string[] = [
+  "**/*.bak",
+  "**/*.db-wal",
+  "**/*.db-shm",
+  "**/node_modules/**",
+  "**/claude-sessions/**",
+  "**/sessions/**",
+  "pistats.db",
+  "pi-sync.json",
+];
+
+/** Single source of truth for what ships in a bundle. Paths are ~-form (portable). */
+export function bundleSpec(): BundleSpecEntry[] {
+  const agent = "~/.pi/agent";
+  return [
+    { source: `${agent}/skills`, bundlePath: "pi/agent/skills", dest: `${agent}/skills`, kind: "dir" },
+    { source: `${agent}/extensions`, bundlePath: "pi/agent/extensions", dest: `${agent}/extensions`, kind: "dir" },
+    { source: `${agent}/git`, bundlePath: "pi/agent/git", dest: `${agent}/git`, kind: "dir" },
+    { source: `${agent}/bin`, bundlePath: "pi/agent/bin", dest: `${agent}/bin`, kind: "dir" },
+    { source: `${agent}/settings.json`, bundlePath: "pi/agent/settings.json", dest: `${agent}/settings.json`, kind: "file" },
+    { source: `${agent}/AGENTS.md`, bundlePath: "pi/agent/AGENTS.md", dest: `${agent}/AGENTS.md`, kind: "file" },
+    { source: `${agent}/trust.json`, bundlePath: "pi/agent/trust.json", dest: `${agent}/trust.json`, kind: "file" },
+    { source: `${agent}/auth.json`, bundlePath: "pi/agent/auth.json", dest: `${agent}/auth.json`, kind: "file", skipFlag: "no-auth" },
+    { source: `${agent}/models.json`, bundlePath: "pi/agent/models.json", dest: `${agent}/models.json`, kind: "file" },
+    { source: `${agent}/models-store.json`, bundlePath: "pi/agent/models-store.json", dest: `${agent}/models-store.json`, kind: "file" },
+    { source: "~/.agents/skills", bundlePath: "agents/skills", dest: "~/.agents/skills", kind: "dir", skipFlag: "no-agents-skills" },
+    { source: "~/.pi/memory/memory.db", bundlePath: "memory/memory.db", dest: "~/.pi/memory/memory.db", kind: "file", sqlite: true, skipFlag: "no-memory" },
+  ];
 }
 
-export async function saveConfig(path: string, cfg: PiSyncConfig): Promise<void> {
-  validate(cfg as unknown as Record<string, unknown>);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+export function resolveSpec(entry: BundleSpecEntry, home: string): {
+  source: string; bundlePath: string; dest: string;
+  kind: "dir" | "file"; sqlite?: boolean; skipFlag?: BundleSpecEntry["skipFlag"];
+} {
+  return {
+    source: expandTildeWith(entry.source, home),
+    bundlePath: entry.bundlePath,
+    dest: expandTildeWith(entry.dest, home),
+    kind: entry.kind,
+    sqlite: entry.sqlite,
+    skipFlag: entry.skipFlag,
+  };
 }
 
-function validate(o: Record<string, unknown>): void {
-  const required = ["peer", "sshKey", "sshPort", "rsyncPort", "syncPaths", "excludePatterns"];
-  for (const k of required) {
-    if (!(k in o)) throw new Error(`pi-sync config missing required field: ${k}`);
-  }
-  if (typeof o.peer !== "string" || !o.peer) throw new Error("peer must be non-empty string");
-  if (typeof o.sshKey !== "string" || !o.sshKey) throw new Error("sshKey must be non-empty string");
+export function defaultHome(): string {
+  return homedir();
 }
 ```
 
-- [ ] **Step 5: Run the test; expect pass**
+- [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- config`
-Expected: 4 tests passing.
+Run: `npx vitest run tests/paths.test.ts`
+Expected: PASS (all).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/types.ts src/config.ts tests/config.test.ts
-git commit -m "feat(config): typed config load/save with validation"
+git add src/types.ts src/paths.ts tests/paths.test.ts
+git commit -m "feat(paths): bundle spec table — single source of truth for what ships"
 ```
 
 ---
 
-### Task 3: lock.ts (TDD)
+### Task 3: Filtered copy engine (adapt `src/manifest.ts`)
 
 **Files:**
-- Test: `tests/lock.test.ts`
-- Create: `src/lock.ts`
+- Modify: `src/manifest.ts` (replace `buildManifest` walker with `copyFiltered`; keep `matchesGlob`)
+- Modify: `tests/manifest.test.ts` (keep glob tests, replace walker tests)
 
-- [ ] **Step 1: Write the failing test**
-
-`tests/lock.test.ts`:
+- [ ] **Step 1: Write the failing tests (replace walker tests in `tests/manifest.test.ts`, keep the existing `matchesGlob` describe block)**
 
 ```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, releaseLock } from "../src/lock.js";
-
-let tmp: string;
-
-beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pi-sync-lock-"));
-});
-
-afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
-});
-
-describe("lock", () => {
-  it("acquires when no lock file exists", async () => {
-    const handle = await acquireLock(tmp);
-    expect(handle.pid).toBe(process.pid);
-    expect(handle.acquiredAt).toBeGreaterThan(0);
-    await releaseLock(tmp, handle);
-  });
-
-  it("refuses when lock held by a live process (simulated)", async () => {
-    const path = join(tmp, "sync.lock");
-    await acquireLock(tmp);
-    // fake another live PID
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(path, JSON.stringify({ pid: 999999, acquiredAt: Date.now() }));
-    // 999999 is almost certainly not running
-    await expect(acquireLock(tmp)).resolves.toBeDefined(); // stale PID → clear & acquire
-  });
-
-  it("refuses when lock held by current process (re-entrant)", async () => {
-    await acquireLock(tmp);
-    await expect(acquireLock(tmp)).rejects.toThrow(/already running/);
-  });
-
-  it("release removes lock file", async () => {
-    const handle = await acquireLock(tmp);
-    await releaseLock(tmp, handle);
-    const { readFile } = await import("node:fs/promises");
-    await expect(readFile(join(tmp, "sync.lock"))).rejects.toThrow();
-  });
-});
-```
-
-- [ ] **Step 2: Run; expect failure**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- lock`
-Expected: FAIL module not found.
-
-- [ ] **Step 3: Implement `src/lock.ts`**
-
-```typescript
-import { readFile, writeFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { kill } from "node:process";
-import type { LockHandle } from "./types.js";
-
-export const LOCK_FILENAME = "sync.lock";
-
-function lockPath(dir: string): string {
-  return join(dir, LOCK_FILENAME);
-}
-
-export async function acquireLock(dir: string): Promise<LockHandle> {
-  const path = lockPath(dir);
-  try {
-    const raw = await readFile(path, "utf8");
-    const existing = JSON.parse(raw) as LockHandle;
-    if (existing.pid === process.pid) {
-      throw new Error(`sync already running (pid ${existing.pid})`);
-    }
-    if (isPidAlive(existing.pid)) {
-      throw new Error(`sync already running (pid ${existing.pid})`);
-    }
-    // stale lock: clear it and fall through to acquire
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      if (err instanceof Error && err.message.startsWith("sync already running")) throw err;
-      // corrupt JSON — treat as stale and continue
-    }
-  }
-  const handle: LockHandle = { pid: process.pid, acquiredAt: Date.now() };
-  await writeFile(path, JSON.stringify(handle), "utf8");
-  return handle;
-}
-
-export async function releaseLock(dir: string, handle: LockHandle): Promise<void> {
-  if (handle.pid !== process.pid) return;
-  try {
-    await unlink(lockPath(dir));
-  } catch {
-    // already gone
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  if (pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-```
-
-- [ ] **Step 4: Run; expect pass**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- lock`
-Expected: 4 tests passing.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/lock.ts tests/lock.test.ts
-git commit -m "feat(lock): pid-based lock with stale-pid recovery"
-```
-
----
-
-## Phase 2: Pure logic
-
-### Task 4: log.ts (TDD)
-
-**Files:**
-- Test: `tests/log.test.ts`
-- Create: `src/log.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/log.test.ts`:
-
-```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { logEvent, readLog } from "../src/log.js";
-import type { SyncEvent } from "../src/types.js";
-
-let tmp: string;
-
-beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pi-sync-log-"));
-});
-
-afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
-});
-
-describe("log", () => {
-  it("appends a JSONL line", async () => {
-    const event: SyncEvent = {
-      ts: new Date().toISOString(),
-      peer: "peer-1",
-      direction: "push",
-      action: "transfer",
-      path: "skills/foo",
-    };
-    await logEvent(tmp, event);
-    const content = await readFile(join(tmp, "log.jsonl"), "utf8");
-    const lines = content.trim().split("\n");
-    expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0])).toEqual(event);
-  });
-
-  it("appends multiple events on separate lines", async () => {
-    for (let i = 0; i < 3; i++) {
-      await logEvent(tmp, {
-        ts: new Date().toISOString(),
-        peer: "p",
-        direction: "push",
-        action: "transfer",
-        path: `f${i}`,
-      });
-    }
-    const events = await readLog(tmp);
-    expect(events).toHaveLength(3);
-    expect(events[0].path).toBe("f0");
-    expect(events[2].path).toBe("f2");
-  });
-
-  it("readLog returns [] when file missing", async () => {
-    expect(await readLog(tmp)).toEqual([]);
-  });
-});
-```
-
-- [ ] **Step 2: Run; expect failure**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- log`
-
-- [ ] **Step 3: Implement `src/log.ts`**
-
-```typescript
-import { appendFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { SyncEvent } from "./types.js";
-
-export const LOG_FILENAME = "log.jsonl";
-
-function logPath(dir: string): string {
-  return join(dir, LOG_FILENAME);
-}
-
-export async function logEvent(dir: string, event: SyncEvent): Promise<void> {
-  await appendFile(logPath(dir), JSON.stringify(event) + "\n", "utf8");
-}
-
-export async function readLog(dir: string): Promise<SyncEvent[]> {
-  let raw: string;
-  try {
-    raw = await readFile(logPath(dir), "utf8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  return raw
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as SyncEvent);
-}
-```
-
-- [ ] **Step 4: Run; expect pass**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- log`
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/log.ts tests/log.test.ts
-git commit -m "feat(log): append-only JSONL event log"
-```
-
----
-
-### Task 5: manifest.ts (TDD)
-
-**Files:**
-- Test: `tests/manifest.test.ts`
-- Create: `src/manifest.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/manifest.test.ts`:
-
-```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { buildManifest, type ManifestEntry, DEFAULT_EXCLUDES } from "../src/manifest.js";
+import { copyFiltered } from "../src/manifest.js";
 
 let root: string;
+let srcDir: string;
+let destDir: string;
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "pi-sync-mf-"));
-  await mkdir(join(root, "skills/a"), { recursive: true });
-  await mkdir(join(root, "skills/b"), { recursive: true });
-  await writeFile(join(root, "skills/a/SKILL.md"), "a");
-  await writeFile(join(root, "skills/b/SKILL.md"), "b");
-  await writeFile(join(root, "AGENTS.md"), "agents");
-  await writeFile(join(root, "auth.json"), "{}");
-  await writeFile(join(root, "settings.json"), "{}");
-  await writeFile(join(root, "models-store.json.bak"), "bak");
+  root = await mkdtemp(join(tmpdir(), "pisync-copy-"));
+  srcDir = join(root, "src");
+  destDir = join(root, "dest");
+  await mkdir(srcDir, { recursive: true });
+  await mkdir(destDir, { recursive: true });
 });
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-describe("manifest", () => {
-  it("walks the tree and returns relative entries", async () => {
-    const m = await buildManifest(root);
-    const paths = m.map((e) => e.relPath).sort();
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        "AGENTS.md",
-        "settings.json",
-        "skills/a/SKILL.md",
-        "skills/b/SKILL.md",
-      ]),
-    );
+describe("copyFiltered", () => {
+  it("copies plain trees recursively", async () => {
+    await mkdir(join(srcDir, "a/b"), { recursive: true });
+    await writeFile(join(srcDir, "a/one.txt"), "one");
+    await writeFile(join(srcDir, "a/b/two.txt"), "two");
+    const stats = await copyFiltered(srcDir, join(destDir, "out"), []);
+    expect(stats.files).toBe(2);
+    expect(await readFile(join(destDir, "out/a/b/two.txt"), "utf8")).toBe("two");
   });
 
-  it("excludes auth.json by default", async () => {
-    const m = await buildManifest(root);
-    expect(m.find((e) => e.relPath === "auth.json")).toBeUndefined();
+  it("skips excluded files and directories", async () => {
+    await mkdir(join(srcDir, "node_modules/pkg"), { recursive: true });
+    await mkdir(join(srcDir, "claude-sessions"), { recursive: true });
+    await writeFile(join(srcDir, "keep.txt"), "k");
+    await writeFile(join(srcDir, "old.bak"), "b");
+    await writeFile(join(srcDir, "node_modules/pkg/index.js"), "n");
+    await writeFile(join(srcDir, "claude-sessions/s.json"), "c");
+    await copyFiltered(srcDir, join(destDir, "out"), ["**/node_modules/**", "**/*.bak", "**/claude-sessions/**"]);
+    expect(await readFile(join(destDir, "out/keep.txt"), "utf8")).toBe("k");
+    await expect(readFile(join(destDir, "out/old.bak"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(destDir, "out/node_modules/pkg/index.js"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(destDir, "out/claude-sessions/s.json"), "utf8")).rejects.toThrow();
   });
 
-  it("excludes *.bak by default", async () => {
-    const m = await buildManifest(root);
-    expect(m.find((e) => e.relPath === "models-store.json.bak")).toBeUndefined();
+  it("dereferences symlinks into real files", async () => {
+    await writeFile(join(root, "target.txt"), "real");
+    await symlink(join(root, "target.txt"), join(srcDir, "link.txt"));
+    await copyFiltered(srcDir, join(destDir, "out"), []);
+    const copied = await readFile(join(destDir, "out/link.txt"), "utf8");
+    expect(copied).toBe("real");
   });
 
-  it("records size and mtime", async () => {
-    const m = await buildManifest(root);
-    const a = m.find((e) => e.relPath === "AGENTS.md");
-    expect(a).toBeDefined();
-    expect(a!.size).toBeGreaterThan(0);
-    expect(a!.mtimeMs).toBeGreaterThan(0);
-  });
-
-  it("adds an extra exclude pattern", async () => {
-    const m = await buildManifest(root, { extra: ["skills/a/**"] });
-    expect(m.find((e) => e.relPath.startsWith("skills/a"))).toBeUndefined();
-  });
-
-  it("DEFAULT_EXCLUDES contains auth.json", () => {
-    expect(DEFAULT_EXCLUDES).toContain("auth.json");
-    expect(DEFAULT_EXCLUDES.some((p) => p.endsWith(".bak"))).toBe(true);
+  it("returns zero stats for a missing source", async () => {
+    const stats = await copyFiltered(join(srcDir, "does-not-exist"), join(destDir, "out"), []);
+    expect(stats).toEqual({ files: 0, bytes: 0 });
   });
 });
 ```
 
-- [ ] **Step 2: Run; expect failure**
+- [ ] **Step 2: Run test to verify it fails**
 
-- [ ] **Step 3: Implement `src/manifest.ts`**
+Run: `npx vitest run tests/manifest.test.ts`
+Expected: FAIL — `copyFiltered` is not exported.
+
+- [ ] **Step 3: Rewrite `src/manifest.ts` (keep `matchesGlob` exactly as-is at the bottom)**
 
 ```typescript
-import { readdir, stat } from "node:fs/promises";
+import { cp, readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 
-export const DEFAULT_EXCLUDES: string[] = [
-  "auth.json",
-  "**/*.bak",
-  "**/*.db-wal",
-  "**/*.db-shm",
-  "**/node_modules/**",
-  "models-store.json.bak",
-];
-
-export interface ManifestEntry {
-  relPath: string;
-  size: number;
-  mtimeMs: number;
+export interface CopyStats {
+  files: number;
+  bytes: number;
 }
 
-export interface ManifestOptions {
-  extra?: string[];
+/**
+ * Copy a file or directory tree, skipping any relative path matching an exclude
+ * glob. Symlinks are dereferenced (copied as real content). Missing sources are
+ * a no-op returning zero stats (optional entries like auth.json may not exist).
+ */
+export async function copyFiltered(
+  src: string,
+  dest: string,
+  excludes: string[],
+): Promise<CopyStats> {
+  try {
+    await stat(src);
+  } catch {
+    return { files: 0, bytes: 0 };
+  }
+  await cp(src, dest, {
+    recursive: true,
+    dereference: true,
+    filter: (srcPath) => {
+      const rel = relative(src, srcPath).split(sep).join("/");
+      if (rel === "") return true; // the root itself
+      return !matchesAny(rel, excludes);
+    },
+  });
+  return await measure(dest, excludes);
 }
 
-export async function buildManifest(
-  root: string,
-  opts: ManifestOptions = {},
-): Promise<ManifestEntry[]> {
-  const excludes = [...DEFAULT_EXCLUDES, ...(opts.extra ?? [])];
-  const out: ManifestEntry[] = [];
-  await walk(root, root, excludes, out);
+/** Walk a staged tree and count non-excluded files/bytes. */
+export async function measure(dir: string, excludes: string[]): Promise<CopyStats> {
+  const out: CopyStats = { files: 0, bytes: 0 };
+  try {
+    await walk(dir, dir, excludes, out);
+  } catch {
+    return { files: 0, bytes: 0 };
+  }
   return out;
 }
 
-async function walk(
-  root: string,
-  dir: string,
-  excludes: string[],
-  out: ManifestEntry[],
-): Promise<void> {
+async function walk(root: string, dir: string, excludes: string[], out: CopyStats): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const abs = join(dir, entry.name);
@@ -758,7 +447,8 @@ async function walk(
       await walk(root, abs, excludes, out);
     } else if (entry.isFile()) {
       const s = await stat(abs);
-      out.push({ relPath: rel, size: s.size, mtimeMs: Math.floor(s.mtimeMs) });
+      out.files += 1;
+      out.bytes += s.size;
     }
   }
 }
@@ -771,15 +461,17 @@ function matchesAny(rel: string, patterns: string[]): boolean {
 }
 
 // Minimal glob matcher: ** for any depth, * for any chars except /, ? for single char.
+// **/ matches zero or more path segments (so "**/*.bak" matches both "x.bak" and "a/b/x.bak").
 export function matchesGlob(s: string, pattern: string): boolean {
-  // escape regex special chars except * and ?
   const re = new RegExp(
     "^" +
       pattern
         .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*\//g, "::DOUBLESTAR_SLASH::")
         .replace(/\*\*/g, "::DOUBLESTAR::")
         .replace(/\*/g, "[^/]*")
         .replace(/\?/g, "[^/]")
+        .replace(/::DOUBLESTAR_SLASH::/g, "(?:.*/)?")
         .replace(/::DOUBLESTAR::/g, ".*") +
       "$",
   );
@@ -787,1411 +479,1009 @@ export function matchesGlob(s: string, pattern: string): boolean {
 }
 ```
 
-- [ ] **Step 4: Run; expect pass**
+Note: the old `buildManifest`/`ManifestEntry`/`ManifestOptions` exports are gone — `src/log.ts` imports only `SyncEvent` from types (fixed in Task 2's types rewrite; update its import in Task 8). If `tests/manifest.test.ts` references `buildManifest`, delete those tests in Step 1 (they were replaced above).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run tests/manifest.test.ts`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/manifest.ts tests/manifest.test.ts
-git commit -m "feat(manifest): recursive file walk with exclude patterns"
+git commit -m "feat(manifest): copyFiltered staging engine — excludes + symlink deref"
 ```
 
 ---
 
-### Task 6: baseline.ts (TDD)
+### Task 4: Bundle manifest build + validate (`src/bundle-manifest.ts`)
 
 **Files:**
-- Test: `tests/baseline.test.ts`
-- Create: `src/baseline.ts`
+- Create: `src/bundle-manifest.ts`
+- Create: `tests/bundle-manifest.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/baseline.test.ts`:
-
 ```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { loadBaseline, saveBaseline, detectConflict } from "../src/baseline.js";
-import type { Baseline } from "../src/types.js";
+import { describe, expect, it } from "vitest";
+import { buildBundleManifest, validateManifest } from "../src/bundle-manifest.js";
+import type { BundleManifest } from "../src/types.js";
 
-let tmp: string;
-const PEER = "peer-1";
+const entries = [
+  { bundlePath: "pi/agent/settings.json", dest: "~/.pi/agent/settings.json", kind: "file" as const },
+  { bundlePath: "memory/memory.db", dest: "~/.pi/memory/memory.db", kind: "file" as const, sqlite: true },
+];
 
-beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pi-sync-base-"));
-});
-
-afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
-});
-
-const blank: Baseline = { peerId: PEER, lastSyncMs: 0, mtimes: {} };
-
-describe("baseline", () => {
-  it("returns blank baseline when file missing", async () => {
-    const b = await loadBaseline(tmp, PEER);
-    expect(b).toEqual(blank);
-  });
-
-  it("round-trips a baseline", async () => {
-    const b: Baseline = { peerId: PEER, lastSyncMs: 12345, mtimes: { "skills/a.md": 1000 } };
-    await saveBaseline(tmp, b);
-    const loaded = await loadBaseline(tmp, PEER);
-    expect(loaded).toEqual(b);
-  });
-
-  it("detectConflict returns true when both sides modified after baseline", () => {
-    const baseline: Baseline = { peerId: PEER, lastSyncMs: 1000, mtimes: {} };
-    expect(detectConflict(baseline, "x.md", 2000, 3000)).toBe(true);
-  });
-
-  it("detectConflict returns false when only one side modified", () => {
-    const baseline: Baseline = { peerId: PEER, lastSyncMs: 1000, mtimes: {} };
-    expect(detectConflict(baseline, "x.md", 2000, 500)).toBe(false);
-  });
-
-  it("detectConflict returns false when neither modified", () => {
-    const baseline: Baseline = { peerId: PEER, lastSyncMs: 1000, mtimes: { "x.md": 500 } };
-    expect(detectConflict(baseline, "x.md", 500, 500)).toBe(false);
+describe("buildBundleManifest", () => {
+  it("produces a schema-1 manifest with totals", () => {
+    const m = buildBundleManifest(entries, { piVersion: "0.87.1", compression: "zstd" });
+    expect(m.schema).toBe(1);
+    expect(m.compression).toBe("zstd");
+    expect(m.totals.files).toBe(0); // caller fills sizes via measure(); zeros ok at build time
+    expect(m.entries[1].sqlite).toBe(true);
+    expect(m.createdAt).toBeTruthy();
   });
 });
-```
 
-- [ ] **Step 2: Run; expect failure**
+describe("validateManifest", () => {
+  it("accepts a valid manifest", () => {
+    const m = buildBundleManifest(entries, { piVersion: "0.87.1", compression: "gzip" });
+    const v = validateManifest(m);
+    expect(v.ok).toBe(true);
+    expect(v.manifest?.compression).toBe("gzip");
+  });
+  it("rejects non-objects and wrong schema", () => {
+    expect(validateManifest(null).ok).toBe(false);
+    expect(validateManifest("nope").ok).toBe(false);
+    expect(validateManifest({ ...validManifest(), schema: 99 }).ok).toBe(false);
+    expect(validateManifest({ ...validManifest(), entries: "x" }).ok).toBe(false);
+  });
+  it("rejects missing required fields", () => {
+    const m = validManifest();
+    delete (m as Partial<BundleManifest>).compression;
+    expect(validateManifest(m).ok).toBe(false);
+  });
+});
 
-- [ ] **Step 3: Implement `src/baseline.ts`**
-
-```typescript
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { Baseline } from "./types.js";
-
-function baselinePath(dir: string, peerId: string): string {
-  return join(dir, `last-sync-${peerId}.json`);
-}
-
-export async function loadBaseline(dir: string, peerId: string): Promise<Baseline> {
-  try {
-    const raw = await readFile(baselinePath(dir, peerId), "utf8");
-    return JSON.parse(raw) as Baseline;
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { peerId, lastSyncMs: 0, mtimes: {} };
-    }
-    throw err;
-  }
-}
-
-export async function saveBaseline(dir: string, b: Baseline): Promise<void> {
-  await writeFile(baselinePath(dir, b.peerId), JSON.stringify(b, null, 2) + "\n", "utf8");
-}
-
-/**
- * Real conflict = both sides modified this path since the last successful sync.
- * @param baseline stored baseline (from previous sync)
- * @param path relative path
- * @param localMtime ms epoch
- * @param remoteMtime ms epoch
- */
-export function detectConflict(
-  baseline: Baseline,
-  path: string,
-  localMtime: number,
-  remoteMtime: number,
-): boolean {
-  const baselineMtime = baseline.mtimes[path] ?? 0;
-  return localMtime > baselineMtime && remoteMtime > baselineMtime;
+function validManifest(): BundleManifest {
+  return buildBundleManifest(entries, { piVersion: "0.87.1", compression: "zstd" });
 }
 ```
 
-- [ ] **Step 4: Run; expect pass**
+- [ ] **Step 2: Run test to verify it fails**
 
-- [ ] **Step 5: Commit**
+Run: `npx vitest run tests/bundle-manifest.test.ts`
+Expected: FAIL — module not found.
 
-```bash
-git add src/baseline.ts tests/baseline.test.ts
-git commit -m "feat(baseline): per-peer mtime baseline + conflict detector"
-```
-
----
-
-## Phase 3: Parsers and adapters
-
-### Task 7: itemize-parser.ts (TDD)
-
-**Files:**
-- Test: `tests/itemize-parser.test.ts`
-- Create: `src/itemize-parser.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/itemize-parser.test.ts`:
+- [ ] **Step 3: Create `src/bundle-manifest.ts`**
 
 ```typescript
-import { describe, it, expect } from "vitest";
-import { parseItemizeLine, parseItemizeStream } from "../src/itemize-parser.js";
+import { hostname } from "node:os";
+import type { BundleManifest, BundleManifestEntry } from "./types.js";
 
-describe("itemize-parser", () => {
-  it("parses a transfer line", () => {
-    const line = ">f+++++++++ skills/a/SKILL.md";
-    const r = parseItemizeLine(line);
-    expect(r).not.toBeNull();
-    expect(r!.direction).toBe(">");
-    expect(r!.typeFlag).toBe("f");
-    expect(r!.path).toBe("skills/a/SKILL.md");
-  });
+export const SUPPORTED_SCHEMA = 1;
+export const PISYNC_VERSION = "0.2.0";
 
-  it("parses a checksum-triggered line", () => {
-    const line = ">fc..t...... skills/a/SKILL.md";
-    const r = parseItemizeLine(line);
-    expect(r!.attributeFlags).toBe("c..t......");
-  });
-
-  it("returns null for blank lines and comments", () => {
-    expect(parseItemizeLine("")).toBeNull();
-    expect(parseItemizeLine(" sending incremental file list")).toBeNull();
-  });
-
-  it("parses a multi-line stream", () => {
-    const input = [
-      "sending incremental file list",
-      ">f+++++++++ skills/a/SKILL.md",
-      "*deleting   skills/old.md",
-      "",
-    ].join("\n");
-    const events = parseItemizeStream(input);
-    expect(events).toHaveLength(2);
-    expect(events[0].path).toBe("skills/a/SKILL.md");
-    expect(events[1].path).toBe("skills/old.md");
-  });
-});
-```
-
-- [ ] **Step 2: Run; expect failure**
-
-- [ ] **Step 3: Implement `src/itemize-parser.ts`**
-
-```typescript
-import type { RsyncItem } from "./types.js";
-
-// rsync itemize format: "<dir><type><attrs> <size-or-mode> <date-or-empty> <path>"
-// example: ">f+++++++++ skills/a/SKILL.md"
-// example: "*deleting   skills/old.md"
-// example: ".d..t...... skills/b/"
-const LINE_RE = /^([><*+.cdlps])(\S+)\s+(.+)$/;
-
-export function parseItemizeLine(line: string): RsyncItem | null {
-  if (!line || line.startsWith(" ")) return null;
-  if (line.startsWith("sending ") || line.startsWith("total ") || line.startsWith("building ")) return null;
-  // delete lines: "*deleting   path" — typeFlag = "deleting", path after spaces
-  if (line.startsWith("*")) {
-    const m = /^\*\s*\S+\s+(.+)$/.exec(line);
-    if (!m) return null;
-    return {
-      direction: "*",
-      typeFlag: "deleting",
-      attributeFlags: "",
-      sizeOrMode: "",
-      path: m[1].trim(),
-    };
-  }
-  const m = LINE_RE.exec(line);
-  if (!m) return null;
+export function buildBundleManifest(
+  entries: Omit<BundleManifestEntry, "files" | "bytes">[],
+  meta: { piVersion: string; compression: "zstd" | "gzip" },
+): BundleManifest {
+  const withSizes: BundleManifestEntry[] = entries.map((e) => ({ ...e, files: 0, bytes: 0 }));
   return {
-    direction: m[1] as RsyncItem["direction"],
-    typeFlag: m[2][0],
-    attributeFlags: m[2].slice(1),
-    sizeOrMode: "",
-    path: m[3].trim(),
+    schema: SUPPORTED_SCHEMA,
+    createdAt: new Date().toISOString(),
+    hostname: hostname(),
+    piVersion: meta.piVersion,
+    pisyncVersion: PISYNC_VERSION,
+    compression: meta.compression,
+    entries: withSizes,
+    totals: { files: 0, bytes: 0 },
   };
 }
 
-export function parseItemizeStream(input: string): RsyncItem[] {
-  return input
-    .split("\n")
-    .map(parseItemizeLine)
-    .filter((x): x is RsyncItem => x !== null);
+export function validateManifest(raw: unknown): {
+  ok: boolean;
+  errors: string[];
+  manifest?: BundleManifest;
+} {
+  const errors: string[] = [];
+  if (raw === null || typeof raw !== "object") {
+    return { ok: false, errors: ["manifest is not an object"] };
+  }
+  const m = raw as Record<string, unknown>;
+  if (m.schema !== SUPPORTED_SCHEMA) errors.push(`unsupported schema: ${String(m.schema)}`);
+  if (m.compression !== "zstd" && m.compression !== "gzip") errors.push("missing/invalid compression");
+  if (!Array.isArray(m.entries)) errors.push("missing entries array");
+  else if (m.entries.some((e) => typeof (e as BundleManifestEntry)?.bundlePath !== "string")) {
+    errors.push("malformed entry in entries");
+  }
+  if (typeof m.createdAt !== "string") errors.push("missing createdAt");
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, errors: [], manifest: m as unknown as BundleManifest };
 }
 ```
 
-- [ ] **Step 4: Run; expect pass**
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run tests/bundle-manifest.test.ts`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/itemize-parser.ts tests/itemize-parser.test.ts
-git commit -m "feat(itemize): parse rsync --itemize-changes output"
+git add src/bundle-manifest.ts tests/bundle-manifest.test.ts
+git commit -m "feat(manifest): schema-1 bundle manifest builder + validator"
 ```
 
 ---
 
-### Task 8: sqlite-snapshot.ts (TDD)
+### Task 5: Tar helpers (`src/archive.ts`)
 
 **Files:**
-- Test: `tests/sqlite-snapshot.test.ts`
-- Create: `src/sqlite-snapshot.ts`
+- Create: `src/archive.ts`
+- Create: `tests/archive.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/sqlite-snapshot.test.ts`:
-
 ```typescript
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { sqliteAvailable } from "../src/sqlite-snapshot.js";
+import { listArchive, packArchive, unpackArchive } from "../src/archive.js";
 
-let tmp: string;
+let root: string;
+let stage: string;
+let outDir: string;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pi-sync-sql-"));
+  root = await mkdtemp(join(tmpdir(), "pisync-arch-"));
+  stage = join(root, "stage");
+  outDir = join(root, "out");
+  await mkdir(join(stage, "pisync-test/inner"), { recursive: true });
+  await mkdir(outDir, { recursive: true });
+  await writeFile(join(stage, "pisync-test/a.txt"), "a");
+  await writeFile(join(stage, "pisync-test/inner/b.txt"), "b");
 });
 
 afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
 });
 
-describe("sqlite-snapshot", () => {
-  it("sqliteAvailable returns true when sqlite3 is on PATH", () => {
-    const probe = spawnSync("sqlite3", ["--version"]);
-    if (probe.status === 0) {
-      expect(sqliteAvailable()).toBe(true);
-    } else {
-      expect(sqliteAvailable()).toBe(false);
-    }
+describe.each(["zstd", "gzip"] as const)("packArchive (%s)", (compression) => {
+  it("writes a .part file, renames atomically, lists and unpacks", async () => {
+    const out = join(outDir, `pisync-test.tar.${compression === "zstd" ? "zst" : "gz"}`);
+    await packArchive(stage, "pisync-test", out, compression);
+    const listing = await readdir(outDir);
+    expect(listing).toEqual([`pisync-test.tar.${compression === "zstd" ? "zst" : "gz"}`]); // no .part left
+    const names = await listArchive(out);
+    expect(names).toContain("pisync-test/a.txt");
+    const dest = join(root, "unpacked");
+    await unpackArchive(out, dest);
+    const entries = await readdir(join(dest, "pisync-test"));
+    expect(entries).toContain("a.txt");
   });
 });
 ```
 
-- [ ] **Step 2: Run; expect failure**
+- [ ] **Step 2: Run test to verify it fails**
 
-- [ ] **Step 3: Implement `src/sqlite-snapshot.ts`**
+Run: `npx vitest run tests/archive.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Create `src/archive.ts`**
 
 ```typescript
 import { spawn } from "node:child_process";
-import { rename } from "node:fs/promises";
+import { rename, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 
-/** Returns true if the sqlite3 CLI is on PATH and responds to --version. */
-export async function sqliteAvailable(): Promise<boolean> {
+function run(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args, { stdio: "ignore" });
+    proc.on("error", reject);
+    proc.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} ${args.join(" ")} exited with code ${code}`));
+    });
+  });
+}
+
+export function zstdAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
-    const proc = spawn("sqlite3", ["--version"], { stdio: "ignore" });
+    const proc = spawn("zstd", ["--version"], { stdio: "ignore" });
     proc.on("error", () => resolve(false));
     proc.on("exit", (code) => resolve(code === 0));
   });
 }
 
 /**
- * Take a consistent backup of a SQLite database using the online backup API.
- * Safe to run while other processes hold the DB open for read/write.
- * Returns the path to the snapshot file.
+ * tar a stage dir into an archive. The compressor is passed EXPLICITLY
+ * (--zstd / -z) — never inferred from the extension, because we write to
+ * `<out>.part` first for atomicity, which breaks suffix detection.
  */
-export async function sqliteSnapshot(dbPath: string, outPath: string): Promise<string> {
+export async function packArchive(
+  stageDir: string,
+  rootName: string,
+  outPath: string,
+  compression: "zstd" | "gzip",
+): Promise<void> {
+  const partPath = `${outPath}.part`;
+  try {
+    await run("tar", [
+      "-C", stageDir,
+      compression === "zstd" ? "--zstd" : "-z",
+      "-cf", partPath,
+      rootName,
+    ]);
+    await rename(partPath, outPath);
+  } catch (err) {
+    await rm(partPath, { force: true }); // never leave a partial artifact
+    throw err;
+  }
+}
+
+export async function listArchive(archivePath: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("sqlite3", [dbPath, `.backup '${outPath}'`], { stdio: "ignore" });
+    const proc = spawn("tar", ["-tf", archivePath], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
     proc.on("error", reject);
     proc.on("exit", (code) => {
-      if (code === 0) resolve(outPath);
-      else reject(new Error(`sqlite3 .backup exited with code ${code}`));
+      if (code !== 0) return reject(new Error(`tar -tf exited with code ${code}`));
+      resolve(out.split("\n").filter((l) => l.trim()));
     });
   });
 }
 
-/** Atomic rename: snapshot over live DB. */
-export async function atomicReplace(src: string, dst: string): Promise<void> {
-  await rename(src, dst);
+/** GNU tar auto-detects compression on extract. Extracts into destDir. */
+export async function unpackArchive(archivePath: string, destDir: string): Promise<void> {
+  await run("tar", ["-xf", archivePath, "-C", destDir]);
+  void dirname; // (keep import graph simple; unused)
 }
 ```
 
-- [ ] **Step 4: Run; expect pass**
+Remove the `void dirname;` line and the `dirname` import if your linter complains — it is not needed; included only to make the file's intent explicit. Prefer deleting both.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run tests/archive.test.ts`
+Expected: PASS (both compressions; skips cleanly only if `tar` is missing — it isn't on CachyOS).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/archive.ts tests/archive.test.ts
+git commit -m "feat(archive): tar pack/list/unpack with explicit compressor + atomic .part rename"
+```
+
+---
+
+### Task 6: DB swap with stale-WAL removal (`src/sqlite-snapshot.ts`)
+
+**Files:**
+- Modify: `src/sqlite-snapshot.ts` (add `swapDatabase`, keep existing functions)
+- Modify: `tests/sqlite-snapshot.test.ts` (add swap tests)
+
+- [ ] **Step 1: Add failing tests to `tests/sqlite-snapshot.test.ts`**
+
+```typescript
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, writeFile, rm, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { swapDatabase } from "../src/sqlite-snapshot.js";
+
+let root: string;
+
+beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "pisync-db-")); });
+afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+describe("swapDatabase", () => {
+  it("replaces the destination and removes stale WAL/SHM sidecars", async () => {
+    const dest = join(root, "memory.db");
+    await writeFile(dest, "old");
+    await writeFile(`${dest}-wal`, "stale-wal");
+    await writeFile(`${dest}-shm`, "stale-shm");
+    const staged = join(root, "import-1.db");
+    await writeFile(staged, "new");
+    await swapDatabase(staged, dest);
+    expect(await readFile(dest, "utf8")).toBe("new");
+    await expect(stat(`${dest}-wal`)).rejects.toThrow();
+    await expect(stat(`${dest}-shm`)).rejects.toThrow();
+  });
+
+  it("works when no sidecars exist", async () => {
+    const dest = join(root, "memory.db");
+    await writeFile(dest, "old");
+    const staged = join(root, "import-1.db");
+    await writeFile(staged, "new");
+    await swapDatabase(staged, dest);
+    expect(await readFile(dest, "utf8")).toBe("new");
+  });
+});
+```
+
+(If the existing test file already declares `root`/hooks, merge these describe blocks into it instead of duplicating variables.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run tests/sqlite-snapshot.test.ts`
+Expected: FAIL — `swapDatabase` is not exported.
+
+- [ ] **Step 3: Add to `src/sqlite-snapshot.ts`**
+
+```typescript
+import { unlink } from "node:fs/promises";
+
+/**
+ * Atomically replace destDb with stagedDb (which must live on the same
+ * filesystem). Deletes stale WAL/SHM sidecars first — replaying a stale WAL
+ * against an imported DB corrupts it. SQLite recreates both on next open.
+ */
+export async function swapDatabase(stagedDb: string, destDb: string): Promise<void> {
+  await unlink(`${destDb}-wal`).catch(() => {});
+  await unlink(`${destDb}-shm`).catch(() => {});
+  await rename(stagedDb, destDb);
+}
+```
+
+(`rename` is already imported at the top of the file.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run tests/sqlite-snapshot.test.ts`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/sqlite-snapshot.ts tests/sqlite-snapshot.test.ts
-git commit -m "feat(sqlite): snapshot DB via online backup API"
+git commit -m "feat(db): swapDatabase — atomic rename + stale WAL/SHM removal"
 ```
 
 ---
 
-### Task 9: ssh.ts (TDD)
+### Task 7: `runExtract` orchestrator + RESTORE.md (`src/bundle.ts`)
 
 **Files:**
-- Test: `tests/ssh.test.ts`
-- Create: `src/ssh.ts`
+- Create: `src/bundle.ts`
+- Create: `tests/bundle.test.ts`
+- Modify: `src/log.ts` (event type swap: `SyncEvent` → `OperationEvent`)
 
-- [ ] **Step 1: Write the failing test**
-
-`tests/ssh.test.ts`:
-
-```typescript
-import { describe, it, expect } from "vitest";
-import { buildSshArgs, generateKeyArgs, sshCopyIdArgs } from "../src/ssh.js";
-
-describe("ssh", () => {
-  it("buildSshArgs adds BatchMode and key", () => {
-    const args = buildSshArgs({ host: "user@b.local", keyPath: "/tmp/id_ed25519", port: 22 });
-    expect(args).toContain("-i");
-    expect(args).toContain("/tmp/id_ed25519");
-    expect(args).toContain("-o");
-    expect(args).toContain("BatchMode=yes");
-    expect(args).toContain("-p");
-    expect(args).toContain("22");
-    expect(args[args.length - 1]).toBe("user@b.local");
-  });
-
-  it("generateKeyArgs is ssh-keygen flags", () => {
-    const args = generateKeyArgs("/tmp/pi-sync-id", "ed25519");
-    expect(args[0]).toBe("-t");
-    expect(args[1]).toBe("ed25519");
-    expect(args[2]).toBe("-f");
-    expect(args[3]).toBe("/tmp/pi-sync-id");
-    expect(args[4]).toBe("-N");
-    expect(args[5]).toBe("");
-  });
-
-  it("sshCopyIdArgs targets the right host", () => {
-    const args = sshCopyIdArgs("/tmp/key.pub", "user@host");
-    expect(args[0]).toBe("-i");
-    expect(args[1]).toBe("/tmp/key.pub");
-    expect(args[2]).toBe("user@host");
-  });
-});
-```
-
-- [ ] **Step 2: Run; expect failure**
-
-- [ ] **Step 3: Implement `src/ssh.ts`**
+- [ ] **Step 1: Update `src/log.ts` to the new event type (one-line change each)**
 
 ```typescript
-export interface SshOpts {
-  host: string;
-  keyPath: string;
-  port: number;
-  connectTimeout?: number;
-  command?: string;
+import { appendFile, readFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import type { OperationEvent } from "./types.js";
+
+export const LOG_FILENAME = "log.jsonl";
+
+function logPath(dir: string): string {
+  return join(dir, LOG_FILENAME);
 }
 
-export function buildSshArgs(opts: SshOpts): string[] {
-  const args: string[] = [];
-  if (opts.port !== 22) args.push("-p", String(opts.port));
-  args.push("-i", opts.keyPath);
-  args.push("-o", "BatchMode=yes");
-  args.push("-o", `ConnectTimeout=${opts.connectTimeout ?? 5}`);
-  args.push("-o", "StrictHostKeyChecking=accept-new");
-  args.push(opts.host);
-  if (opts.command !== undefined) args.push(opts.command);
-  return args;
+export async function logEvent(dir: string, event: OperationEvent): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await appendFile(logPath(dir), JSON.stringify(event) + "\n", "utf8");
 }
 
-export function generateKeyArgs(keyPath: string, type: "ed25519" | "rsa" = "ed25519"): string[] {
-  return ["-t", type, "-f", keyPath, "-N", "", "-q"];
-}
-
-export function sshCopyIdArgs(pubKeyPath: string, host: string): string[] {
-  return ["-i", pubKeyPath, host];
-}
-```
-
-- [ ] **Step 4: Run; expect pass**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/ssh.ts tests/ssh.test.ts
-git commit -m "feat(ssh): ssh arg builders (no live ssh calls)"
-```
-
----
-
-### Task 10: mdns.ts (TDD, mostly mocked)
-
-**Files:**
-- Test: `tests/mdns.test.ts`
-- Create: `src/mdns.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/mdns.test.ts`:
-
-```typescript
-import { describe, it, expect } from "vitest";
-import { formatServiceName, parseServiceName, type MdnsService } from "../src/mdns.js";
-
-describe("mdns", () => {
-  it("formatServiceName produces _type._proto.local", () => {
-    expect(formatServiceName("pi-sync", "tcp")).toBe("_pi-sync._tcp.local");
-  });
-
-  it("parseServiceName extracts TXT records", () => {
-    const txt: Record<string, string> = { id: "abc", pi: "1.0", name: "laptop-b" };
-    const s: MdnsService = {
-      name: "laptop-b",
-      host: "192.168.100.42",
-      port: 7333,
-      txt,
-    };
-    const parsed = parseServiceName(s);
-    expect(parsed.id).toBe("abc");
-    expect(parsed.piVersion).toBe("1.0");
-    expect(parsed.name).toBe("laptop-b");
-  });
-});
-```
-
-- [ ] **Step 2: Run; expect failure**
-
-- [ ] **Step 3: Implement `src/mdns.ts`**
-
-```typescript
-import Bonjour from "bonjour-service";
-import type { PeerInfo } from "./types.js";
-
-export type MdnsService = {
-  name: string;
-  host: string;
-  port: number;
-  txt: Record<string, string>;
-};
-
-export const SERVICE_TYPE = "pi-sync";
-export const SERVICE_PROTO = "tcp";
-export const SERVICE_PORT = 7333;
-
-export function formatServiceName(type: string = SERVICE_TYPE, proto: string = SERVICE_PROTO): string {
-  return `_${type}._${proto}.local`;
-}
-
-/** Convert raw bonjour-service browse result into our PeerInfo shape. */
-export function parseServiceName(s: MdnsService): PeerInfo {
-  return {
-    id: s.txt["id"] ?? "",
-    name: s.txt["name"] ?? s.name,
-    host: s.host,
-    port: s.port,
-    piVersion: s.txt["pi"] ?? "unknown",
-    lastSeen: Date.now(),
-  };
-}
-
-export interface Advertiser {
-  stop(): void;
-}
-
-export function advertise(opts: { id: string; name: string; piVersion: string; port?: number }): Advertiser {
-  const bonjour = new Bonjour();
-  const service = bonjour.publish({
-    name: opts.name,
-    type: SERVICE_TYPE,
-    protocol: SERVICE_PROTO,
-    port: opts.port ?? SERVICE_PORT,
-    txt: { id: opts.id, name: opts.name, pi: opts.piVersion },
-  });
-  return {
-    stop() {
-      try { service.stop(); } catch { /* ignore */ }
-      try { bonjour.unpublishAll(); } catch { /* ignore */ }
-      try { bonjour.destroy(); } catch { /* ignore */ }
-    },
-  };
-}
-
-/** Browse for peers. Resolves with whatever is found within `timeoutMs`. */
-export function findPeers(timeoutMs: number = 5000): Promise<PeerInfo[]> {
-  return new Promise((resolve) => {
-    const bonjour = new Bonjour();
-    const found: PeerInfo[] = [];
-    const browser = bonjour.find({ type: SERVICE_TYPE, protocol: SERVICE_PROTO });
-    browser.on("up", (svc: unknown) => {
-      const s = svc as MdnsService;
-      const info = parseServiceName(s);
-      if (info.id) found.push(info);
-    });
-    setTimeout(() => {
-      try { browser.stop(); } catch { /* ignore */ }
-      try { bonjour.destroy(); } catch { /* ignore */ }
-      resolve(found);
-    }, timeoutMs);
-  });
-}
-```
-
-- [ ] **Step 4: Run; expect pass**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test -- mdns`
-Expected: 2 tests passing.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/mdns.ts tests/mdns.test.ts
-git commit -m "feat(mdns): advertise + browse via bonjour-service"
-```
-
----
-
-## Phase 4: Orchestration
-
-### Task 11: sync.ts (orchestrator)
-
-**Files:**
-- Create: `src/sync.ts`
-
-This task is glue code; tests for it are at the integration-test task (Task 20).
-
-- [ ] **Step 1: Implement `src/sync.ts`**
-
-```typescript
-import { spawn } from "node:child_process";
-import { resolve, join, basename } from "node:path";
-import { homedir } from "node:os";
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { buildManifest, DEFAULT_EXCLUDES } from "./manifest.js";
-import { parseItemizeStream, type RsyncItem } from "./itemize-parser.js";
-import { loadBaseline, saveBaseline, detectConflict } from "./baseline.js";
-import { logEvent, readLog } from "./log.js";
-import { acquireLock, releaseLock } from "./lock.js";
-import { sqliteSnapshot, sqliteAvailable, atomicReplace } from "./sqlite-snapshot.js";
-import { buildSshArgs } from "./ssh.js";
-import type { PiSyncConfig, PeerInfo, SyncDirection, Baseline } from "./types.js";
-
-const execFileP = promisify(execFile);
-
-const PEER_DIR = join(homedir(), ".pi");
-const CACHE_DIR = join(PEER_DIR, "cache", "pi-sync");
-const MEMORY_DB = join(PEER_DIR, "memory", "memory.db");
-
-export interface SyncOpts {
-  config: PiSyncConfig;
-  peer: PeerInfo;
-  direction: SyncDirection;
-  onProgress?: (msg: string) => void;
-}
-
-export interface SyncResult {
-  transferred: number;
-  conflicts: string[];
-  bytes: number;
-  error?: string;
-}
-
-/**
- * Run a single rsync transfer.
- * For `push`: src on local → dst on remote (under ~/.pi/ on remote)
- * For `pull`: src on remote → dst on local
- *
- * Memory DB is special-cased: snapshot first, then transfer the snapshot.
- */
-export async function runSync(opts: SyncOpts): Promise<SyncResult> {
-  const { config, peer, direction, onProgress } = opts;
-  const handle = await acquireLock(CACHE_DIR);
-
-  const result: SyncResult = { transferred: 0, conflicts: [], bytes: 0 };
-
+export async function readLog(dir: string): Promise<OperationEvent[]> {
+  let raw: string;
   try {
-    // 1. Memory DB: snapshot locally before sending
-    let memorySnapshot: string | null = null;
-    if (await sqliteAvailable()) {
-      memorySnapshot = `/tmp/pi-sync-mem-${randomUUID()}.db`;
-      await sqliteSnapshot(MEMORY_DB, memorySnapshot);
-      await logEvent(CACHE_DIR, {
-        ts: new Date().toISOString(),
-        peer: peer.id,
-        direction,
-        action: "snapshot",
-        path: "memory.db",
-        detail: { snapshot: memorySnapshot },
-      });
-    } else {
-      await logEvent(CACHE_DIR, {
-        ts: new Date().toISOString(),
-        peer: peer.id,
-        direction,
-        action: "skip",
-        path: "memory.db",
-        detail: { reason: "sqlite3 not installed" },
-      });
-    }
-
-    // 2. Build rsync command
-    const excludeArgs = DEFAULT_EXCLUDES.flatMap((e) => ["--exclude", e]);
-    const sshArgs = buildSshArgs({
-      host: peer.host,
-      keyPath: resolve(config.sshKey.startsWith("~") ? config.sshKey.replace("~", homedir()) : config.sshKey),
-      port: config.rsyncPort,
-      connectTimeout: 5,
-    });
-    const sshCmd = `ssh ${sshArgs.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
-    const rsyncArgs: string[] = [
-      "-a",
-      "--update",
-      "--itemize-changes",
-      "--info=stats2",
-      "--backup",
-      `--backup-dir=${join(CACHE_DIR, "conflict-archive", peer.id, String(Date.now()))}`,
-      ...excludeArgs,
-      "-e", sshCmd,
-    ];
-
-    const src = direction === "push" ? join(PEER_DIR, "agent") : `${peer.host}:${PEER_DIR}/agent/`;
-    const dst = direction === "push" ? `${peer.host}:${PEER_DIR}/agent/` : join(PEER_DIR, "agent");
-    rsyncArgs.push(src, dst);
-
-    if (onProgress) onProgress(`rsync ${direction}…`);
-    const { stdout } = await execFileP("rsync", rsyncArgs, { maxBuffer: 50 * 1024 * 1024 });
-
-    // 3. Parse rsync output for conflicts
-    const baseline = await loadBaseline(CACHE_DIR, peer.id);
-    const items = parseItemizeStream(stdout);
-    await classifyItems(items, peer, direction, baseline, result);
-
-    // 4. Memory DB transfer (separate from rsync because of snapshot semantics)
-    if (memorySnapshot) {
-      await transferMemoryDb(direction, peer, config, memorySnapshot);
-      await logEvent(CACHE_DIR, {
-        ts: new Date().toISOString(),
-        peer: peer.id,
-        direction,
-        action: "rename",
-        path: "memory.db",
-      });
-    }
-
-    // 5. Update baseline
-    baseline.lastSyncMs = Date.now();
-    const manifest = await buildManifest(join(PEER_DIR, "agent"));
-    for (const entry of manifest) {
-      baseline.mtimes[entry.relPath] = entry.mtimeMs;
-    }
-    await saveBaseline(CACHE_DIR, baseline);
+    raw = await readFile(logPath(dir), "utf8");
   } catch (err: unknown) {
-    result.error = err instanceof Error ? err.message : String(err);
-    await logEvent(CACHE_DIR, {
-      ts: new Date().toISOString(),
-      peer: peer.id,
-      direction,
-      action: "error",
-      path: "-",
-      detail: { error: result.error },
-    });
-  } finally {
-    await releaseLock(CACHE_DIR, handle);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
   }
+  return raw
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as OperationEvent);
+}
+```
 
-  return result;
+(Delete `tests/log.test.ts` sync-shaped cases or update them to `OperationEvent` — prefer updating: same assertions with `{ ts, op: "extract", status: "done" }` events.)
+
+- [ ] **Step 2: Write the failing integration test `tests/bundle.test.ts`**
+
+Uses a fake `$HOME` sandbox and a tiny fixture SQLite DB. Skips if the `sqlite3` CLI is absent.
+
+```typescript
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, mkdir, writeFile, rm, readFile, stat, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runExtract } from "../src/bundle.js";
+import { runImport } from "../src/restore.js"; // wired in Task 8; test extended there
+
+const execFile = promisify(execFileCb);
+
+let home: string;
+let outDir: string;
+let dbReady = true;
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "pisync-home-"));
+  outDir = await mkdtemp(join(tmpdir(), "pisync-out-"));
+  await mkdir(join(home, ".pi/agent/skills/my-skill"), { recursive: true });
+  await mkdir(join(home, ".agents/skills/other"), { recursive: true });
+  await mkdir(join(home, ".pi/memory"), { recursive: true });
+  await writeFile(join(home, ".pi/agent/settings.json"), '{"defaultModel":"x"}');
+  await writeFile(join(home, ".pi/agent/AGENTS.md"), "# rules");
+  await writeFile(join(home, ".pi/agent/trust.json"), "{}");
+  await writeFile(join(home, ".pi/agent/auth.json"), '{"key":"secret"}');
+  await writeFile(join(home, ".pi/agent/models.json"), "{}");
+  await writeFile(join(home, ".pi/agent/models-store.json"), "{}");
+  await writeFile(join(home, ".pi/agent/skills/my-skill/SKILL.md"), "# skill");
+  await writeFile(join(home, ".agents/skills/other/SKILL.md"), "# other");
+  try {
+    await execFile("sqlite3", [join(home, ".pi/memory/memory.db"),
+      "CREATE TABLE t(x); INSERT INTO t VALUES (42);"]);
+  } catch {
+    dbReady = false;
+  }
+});
+
+afterEach(async () => {
+  await rm(home, { recursive: true, force: true });
+  await rm(outDir, { recursive: true, force: true });
+});
+
+describe("runExtract", () => {
+  it("produces an archive with manifest and RESTORE.md", async () => {
+    const result = await runExtract({ outDir, home });
+    expect(result.entries.map((e) => e.bundlePath)).toContain("memory/memory.db");
+    const s = await stat(result.archivePath);
+    expect(s.size).toBeGreaterThan(0);
+    expect(result.archivePath.endsWith(".tar.zst") || result.archivePath.endsWith(".tar.gz")).toBe(true);
+  });
+
+  it("--noMemory and --noAuth drop their entries", async () => {
+    const result = await runExtract({ outDir, home, noMemory: true, noAuth: true });
+    const paths = result.entries.map((e) => e.bundlePath);
+    expect(paths).not.toContain("memory/memory.db");
+    expect(paths).not.toContain("pi/agent/auth.json");
+    expect(paths).toContain("pi/agent/skills");
+  });
+
+  it("import round-trips state into a fresh home", async () => {
+    const extract = await runExtract({ outDir, home });
+    const home2 = await mkdtemp(join(tmpdir(), "pisync-target-"));
+    try {
+      const imported = await runImport(extract.archivePath, { home: home2 });
+      expect(imported.restored).toContain(join(home2, ".pi/agent/settings.json"));
+      expect(await readFile(join(home2, ".pi/agent/settings.json"), "utf8")).toContain("defaultModel");
+      expect(await readFile(join(home2, ".agents/skills/other/SKILL.md"), "utf8")).toBe("# other");
+      if (dbReady) {
+        const { stdout } = await execFile("sqlite3", [join(home2, ".pi/memory/memory.db"), "SELECT x FROM t;"]);
+        expect(stdout.trim()).toBe("42");
+      }
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `npx vitest run tests/bundle.test.ts`
+Expected: FAIL — `runExtract` (and `runImport`) not found.
+
+- [ ] **Step 4: Create `src/bundle.ts`**
+
+```typescript
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BUNDLE_EXCLUDES, bundleSpec, defaultHome, expandTildeWith, resolveSpec } from "./paths.js";
+import { copyFiltered, measure } from "./manifest.js";
+import { buildBundleManifest, PISYNC_VERSION } from "./bundle-manifest.js";
+import { packArchive, zstdAvailable } from "./archive.js";
+import { sqliteAvailable, sqliteSnapshot } from "./sqlite-snapshot.js";
+import type { BundleManifest, BundleManifestEntry, ExtractOptions, ExtractResult } from "./types.js";
+import { logEvent } from "./log.js";
+
+const execFileAsync = promisify(execFile);
+
+export function cacheDir(home: string): string {
+  return join(expandTildeWith("~/.pi/cache/pi-sync", home));
 }
 
-async function classifyItems(
-  items: RsyncItem[],
-  peer: PeerInfo,
-  direction: SyncDirection,
-  baseline: Baseline,
-  result: SyncResult,
-): Promise<void> {
-  for (const item of items) {
-    if (item.direction === "*" || item.typeFlag === "d") continue;
-    if (item.direction === ">") {
-      result.transferred++;
-      await logEvent(CACHE_DIR, {
-        ts: new Date().toISOString(),
-        peer: peer.id,
-        direction,
-        action: "transfer",
-        path: item.path,
-        detail: { attrs: item.attributeFlags },
-      });
-    } else if (item.attributeFlags.includes("c")) {
-      // checksum-triggered transfer: check for real conflict
-      const localPath = join(PEER_DIR, "agent", item.path);
-      let localMtime = 0;
-      try {
-        const s = await stat(localPath);
-        localMtime = Math.floor(s.mtimeMs);
-      } catch { /* ignore */ }
-      const isConflict = detectConflict(baseline, item.path, localMtime, Date.now());
-      if (isConflict) {
-        result.conflicts.push(item.path);
-        await logEvent(CACHE_DIR, {
-          ts: new Date().toISOString(),
-          peer: peer.id,
-          direction,
-          action: "conflict",
-          path: item.path,
+function timestampName(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `pisync-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+async function piVersion(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("pi", ["--version"], { timeout: 3000 });
+    return stdout.trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function pathBytes(p: string, kind: "dir" | "file"): Promise<number> {
+  if (kind === "file") {
+    try { return (await stat(p)).size; } catch { return 0; }
+  }
+  return (await measure(p, BUNDLE_EXCLUDES)).bytes;
+}
+
+async function assertDiskSpace(outDir: string, estimateBytes: number): Promise<void> {
+  const s = await statfs(outDir);
+  const free = s.bavail * s.bsize;
+  if (free < estimateBytes * 1.2) {
+    throw new Error(`Insufficient disk space in ${outDir}: need ~${Math.ceil(estimateBytes * 1.2 / 1e6)} MB, free ${Math.floor(free / 1e6)} MB`);
+  }
+}
+
+function restoreMd(rootName: string, compression: string, manifest: BundleManifest): string {
+  const flag = compression === "zstd" ? "--zstd" : "";
+  const lines = manifest.entries
+    .map((e) => `mkdir -p ~/$(dirname \`${e.dest.replace(/^~\\//, ".pi/")}\`)  # ${e.bundlePath}`)
+    .join("\n");
+  return `# pi-sync bundle — ${rootName}
+
+Extracted from \${hostname} on \${createdAt}. Restore with plain shell — no pi-sync needed.
+
+## 1. Unpack
+
+\`\`\`bash
+tar ${flag} -xf ${rootName}.tar.${compression === "zstd" ? "zst" : "gz"} -C /tmp
+\`\`\`
+
+## 2. Copy state into \$HOME
+
+\`\`\`bash
+cp -a /tmp/${rootName}/pi/agent/. ~/.pi/agent/
+cp -a /tmp/${rootName}/agents/skills/. ~/.agents/skills/   # if present
+\`\`\`
+
+## 3. Swap the memory DB (LaPis)
+
+\`\`\`bash
+rm -f ~/.pi/memory/memory.db-wal ~/.pi/memory/memory.db-shm
+mv /tmp/${rootName}/memory/memory.db ~/.pi/memory/memory.db
+\`\`\`
+
+## Caveats
+
+- settings.json may reference absolute paths OUTSIDE ~/.pi (e.g. extension entries
+  pointing at ~/Documents/... repos). Fix or remove those entries on this machine.
+- auth.json contains API keys — treat this bundle like a credential file.
+- Run this restore BEFORE starting pi, or restart pi afterwards.
+- Per-entry map (bundlePath -> dest):
+${lines}
+`;
+}
+
+export async function runExtract(opts: ExtractOptions = {}, logDirHome?: string): Promise<ExtractResult> {
+  const started = Date.now();
+  const home = opts.home ?? defaultHome();
+  const logDir = logDirHome ? cacheDir(logDirHome) : cacheDir(home);
+  const spec = bundleSpec().filter((e) => {
+    if (e.skipFlag === "no-memory" && opts.noMemory) return false;
+    if (e.skipFlag === "no-auth" && opts.noAuth) return false;
+    if (e.skipFlag === "no-agents-skills" && opts.noAgentsSkills) return false;
+    return true;
+  });
+
+  const outDir = expandTildeWith(opts.outDir ?? "~/Downloads", home);
+  const compression = (await zstdAvailable()) ? "zstd" : "gzip";
+  const rootName = timestampName();
+  const archivePath = join(outDir, `${rootName}.tar.${compression === "zstd" ? "zst" : "gz"}`);
+
+  await logEvent(logDir, { ts: new Date().toISOString(), op: "extract", status: "start", detail: { outDir, compression } });
+  try {
+    if (!(await sqliteAvailable())) {
+      throw new Error("sqlite3 CLI not found — install it (e.g. `sudo pacman -S sqlite`) to bundle the memory DB, or re-run with --no-memory.");
+    }
+    await mkdir(outDir, { recursive: true });
+
+    // Pre-flight: estimate raw input size (+20%) and check target disk space.
+    let estimate = 0;
+    for (const e of spec) {
+      const r = resolveSpec(e, home);
+      estimate += await pathBytes(r.source, e.kind);
+    }
+    await assertDiskSpace(outDir, estimate);
+
+    // Stage.
+    const stageBase = await mkdtemp(join(cacheDir(home), "stage-"));
+    const stage = join(stageBase, rootName);
+    await mkdir(stage, { recursive: true });
+    try {
+      const entries: BundleManifestEntry[] = [];
+      for (const e of spec) {
+        const r = resolveSpec(e, home);
+        const destInStage = join(stage, e.bundlePath);
+        await mkdir(dirname_(destInStage), { recursive: true });
+        if (e.sqlite) {
+          await sqliteSnapshot(r.source, destInStage); // consistent copy while pi runs
+        } else {
+          await copyFiltered(r.source, destInStage, BUNDLE_EXCLUDES);
+        }
+        const m = e.kind === "dir"
+          ? await measure(destInStage, BUNDLE_EXCLUDES)
+          : await measure(destInStage, []);
+        entries.push({
+          bundlePath: e.bundlePath, dest: e.dest, kind: e.kind,
+          files: m.files, bytes: m.bytes, sqlite: e.sqlite,
         });
       }
+
+      const manifest = buildBundleManifest(
+        entries.map(({ files: _f, bytes: _b, ...rest }) => rest),
+        { piVersion: await piVersion(), compression },
+      );
+      manifest.entries = entries;
+      manifest.totals = {
+        files: entries.reduce((a, e) => a + e.files, 0),
+        bytes: entries.reduce((a, e) => a + e.bytes, 0),
+      };
+      await writeFile(join(stage, "manifest.json"), JSON.stringify(manifest, null, 2));
+      await writeFile(join(stage, "RESTORE.md"), restoreMd(rootName, compression, manifest));
+
+      // Pack atomically: <archive>.part -> rename.
+      await packArchive(stageBase, rootName, archivePath, compression);
+    } finally {
+      await rm(stageBase, { recursive: true, force: true });
     }
-  }
-}
 
-async function transferMemoryDb(
-  direction: SyncDirection,
-  peer: PeerInfo,
-  config: PiSyncConfig,
-  localSnapshot: string,
-): Promise<void> {
-  const sshArgs = buildSshArgs({
-    host: peer.host,
-    keyPath: resolve(config.sshKey.startsWith("~") ? config.sshKey.replace("~", homedir()) : config.sshKey),
-    port: config.sshPort,
-    connectTimeout: 5,
-  });
-  const sshCmd = `ssh ${sshArgs.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
-  if (direction === "push") {
-    await execFileP("rsync", ["-a", "-e", sshCmd, localSnapshot, `${peer.host}:/tmp/mem-receive.db`]);
-    // Atomic rename on receiver
-    await execFileP("ssh", [...sshArgs, "mv", "/tmp/mem-receive.db", MEMORY_DB]);
-  } else {
-    await execFileP("rsync", ["-a", "-e", sshCmd, `${peer.host}:${MEMORY_DB}`, localSnapshot]);
-    await atomicReplace(localSnapshot, MEMORY_DB);
-  }
-}
-```
-
-- [ ] **Step 2: Verify TypeScript compiles**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npx tsc --noEmit`
-Expected: no errors. If errors, fix and re-run.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/sync.ts
-git commit -m "feat(sync): orchestrator with memory-db snapshot + baseline update"
-```
-
----
-
-## Phase 5: Commands
-
-### Task 12: commands/sync-push.ts and commands/sync-pull.ts
-
-**Files:**
-- Create: `src/commands/sync-push.ts`
-- Create: `src/commands/sync-pull.ts`
-
-These are thin wrappers over `sync.ts`. No new tests; tested in Task 20 integration.
-
-- [ ] **Step 1: Implement `src/commands/sync-push.ts`**
-
-```typescript
-import { runSync, type SyncResult } from "../sync.js";
-import type { PiSyncConfig, PeerInfo } from "../types.js";
-
-export async function syncPush(
-  config: PiSyncConfig,
-  peer: PeerInfo,
-  onProgress?: (msg: string) => void,
-): Promise<SyncResult> {
-  return runSync({ config, peer, direction: "push", onProgress });
-}
-```
-
-- [ ] **Step 2: Implement `src/commands/sync-pull.ts`**
-
-```typescript
-import { runSync, type SyncResult } from "../sync.js";
-import type { PiSyncConfig, PeerInfo } from "../types.js";
-
-export async function syncPull(
-  config: PiSyncConfig,
-  peer: PeerInfo,
-  onProgress?: (msg: string) => void,
-): Promise<SyncResult> {
-  return runSync({ config, peer, direction: "pull", onProgress });
-}
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/commands/sync-push.ts src/commands/sync-pull.ts
-git commit -m "feat(commands): sync-push and sync-pull wrappers"
-```
-
----
-
-### Task 13: commands/sync.ts (the main `/sync`)
-
-**Files:**
-- Create: `src/commands/sync.ts`
-
-- [ ] **Step 1: Implement `src/commands/sync.ts`**
-
-```typescript
-import { syncPush } from "./sync-push.js";
-import { syncPull } from "./sync-pull.js";
-import type { PiSyncConfig, PeerInfo } from "../types.js";
-
-export interface FullSyncResult {
-  push: { transferred: number; conflicts: string[]; bytes: number; error?: string };
-  pull: { transferred: number; conflicts: string[]; bytes: number; error?: string };
-}
-
-export async function fullSync(
-  config: PiSyncConfig,
-  peer: PeerInfo,
-  onProgress?: (msg: string) => void,
-): Promise<FullSyncResult> {
-  const note = (m: string) => onProgress?.(m);
-  note("push: local → remote");
-  const push = await syncPush(config, peer, onProgress);
-  note("pull: remote → local");
-  const pull = await syncPull(config, peer, onProgress);
-  return { push, pull };
-}
-```
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add src/commands/sync.ts
-git commit -m "feat(commands): full bidirectional sync handler"
-```
-
----
-
-### Task 14: commands/sync-peers.ts
-
-**Files:**
-- Create: `src/commands/sync-peers.ts`
-
-- [ ] **Step 1: Implement `src/commands/sync-peers.ts`**
-
-```typescript
-import { findPeers } from "../mdns.js";
-import { loadConfig } from "../config.js";
-import type { PeerInfo } from "../types.js";
-
-export interface PeersResult {
-  peers: PeerInfo[];
-  hint?: string;
-}
-
-export async function listPeers(timeoutMs = 5000): Promise<PeersResult> {
-  const peers = await findPeers(timeoutMs);
-  const hint = peers.length === 0
-    ? "no peers found — if both laptops are on guest WiFi, AP isolation may block mDNS. Check connectivity or configure peer manually via /sync-setup."
-    : undefined;
-  // Honor settings.json peer as a fallback even when mDNS finds nothing
-  const config = await loadConfig();
-  if (config && peers.length === 0) {
-    peers.push({
-      id: "configured",
-      name: "configured peer",
-      host: config.peer,
-      port: 22,
-      piVersion: "unknown",
-      lastSeen: 0,
-    });
-  }
-  return { peers, hint };
-}
-```
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add src/commands/sync-peers.ts
-git commit -m "feat(commands): list peers via mDNS with settings fallback"
-```
-
----
-
-### Task 15: commands/sync-setup.ts
-
-**Files:**
-- Create: `src/commands/sync-setup.ts`
-
-- [ ] **Step 1: Implement `src/commands/sync-setup.ts`**
-
-```typescript
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { homedir } from "node:os";
-import { saveConfig } from "../config.js";
-import { generateKeyArgs, sshCopyIdArgs, buildSshArgs } from "../ssh.js";
-import type { PiSyncConfig } from "../types.js";
-
-const execFileP = promisify(execFile);
-
-export async function setupPeer(remoteHost: string): Promise<{ pubkey: string; config: PiSyncConfig }> {
-  const keyPath = resolve(homedir(), ".ssh", "pi-sync-ed25519");
-  const pubPath = keyPath + ".pub";
-
-  // 1. Generate key if missing
-  if (!existsSync(keyPath)) {
-    await execFileP("ssh-keygen", generateKeyArgs(keyPath));
-  }
-
-  // 2. Try ssh-copy-id (uses password auth for one-time install)
-  try {
-    await execFileP("ssh-copy-id", sshCopyIdArgs(pubPath, remoteHost));
+    const bytes = (await stat(archivePath)).size;
+    const result: ExtractResult = {
+      archivePath, compression, bytes,
+      durationMs: Date.now() - started, entries: manifest.entries,
+    };
+    await logEvent(logDir, { ts: new Date().toISOString(), op: "extract", status: "done", detail: { archivePath, bytes } });
+    return result;
   } catch (err) {
-    throw new Error(
-      `ssh-copy-id failed. Manually add this public key to ${remoteHost}:~/.ssh/authorized_keys:\n\n${await readPubKey(pubPath)}\n\nThen re-run /sync-setup.`,
-    );
+    await logEvent(logDir, { ts: new Date().toISOString(), op: "extract", status: "error", detail: { error: String(err) } });
+    throw err;
   }
-
-  // 3. Verify
-  await execFileP("ssh", buildSshArgs({ host: remoteHost, keyPath, port: 22, command: "true" }));
-
-  // 4. Persist config
-  const cfg: PiSyncConfig = {
-    peer: remoteHost,
-    sshKey: "~/.ssh/pi-sync-ed25519",
-    sshPort: 22,
-    rsyncPort: 22,
-    syncPaths: ["default"],
-    excludePatterns: [],
-  };
-  const { defaultConfigPath } = await import("../config.js");
-  await saveConfig(defaultConfigPath(), cfg);
-
-  return { pubkey: await readPubKey(pubPath), config: cfg };
 }
 
-async function readPubKey(p: string): Promise<string> {
-  const { readFile } = await import("node:fs/promises");
-  return (await readFile(p, "utf8")).trim();
-}
+// tiny dirname helper so we don't import path twice under different names
+import { dirname as dirname_ } from "node:path";
+void readdir;
 ```
 
-- [ ] **Step 2: Commit**
+Notes for the implementer:
+- Add `home?: string` to `ExtractOptions` in `src/types.ts` (test sandbox support): `export interface ExtractOptions { outDir?: string; home?: string; noMemory?: boolean; noAuth?: boolean; noAgentsSkills?: boolean; }`
+- The `entries.map(({ files: _f, bytes: _b, ...rest }) => rest)` destructure satisfies `buildBundleManifest`'s input type; sizes are then re-attached via `manifest.entries = entries`.
+- Move the `dirname as dirname_` import up with the other `node:path` import (`join, dirname as dirname_`); drop the `void readdir;` and the unused `readdir` import if unused.
+
+- [ ] **Step 5: Run extract-only tests**
+
+Run: `npx vitest run tests/bundle.test.ts -t "runExtract"`
+Expected: the two `runExtract` tests PASS; the round-trip test FAILS (no `runImport` yet — Task 8).
+
+- [ ] **Step 6: Commit (extract, without import)**
 
 ```bash
-git add src/commands/sync-setup.ts
-git commit -m "feat(commands): /sync-setup generates key, installs on remote, writes config"
+git add src/bundle.ts src/log.ts tests/bundle.test.ts src/types.ts
+git commit -m "feat(bundle): runExtract — stage, snapshot DB, manifest, RESTORE.md, atomic pack"
 ```
 
 ---
 
-### Task 16: commands/sync-status.ts
+### Task 8: `runImport` + command wiring (`src/restore.ts`, `src/index.ts`)
 
 **Files:**
-- Create: `src/commands/sync-status.ts`
+- Create: `src/restore.ts`
+- Modify: `src/types.ts` (add `home?: string` to `ImportOptions`)
+- Rewrite: `src/index.ts`
 
-- [ ] **Step 1: Implement `src/commands/sync-status.ts`**
+- [ ] **Step 1: Add `ImportOptions` to `src/types.ts`**
 
 ```typescript
-import { readLog } from "../log.js";
+export interface ImportOptions {
+  home?: string; // defaults to os.homedir(); test sandbox support
+}
+```
+
+- [ ] **Step 2: Write `src/restore.ts`**
+
+```typescript
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import type { SyncEvent } from "../types.js";
+import { BUNDLE_EXCLUDES, defaultHome, expandTildeWith } from "./paths.js";
+import { copyFiltered } from "./manifest.js";
+import { validateManifest } from "./bundle-manifest.js";
+import { listArchive, unpackArchive } from "./archive.js";
+import { swapDatabase } from "./sqlite-snapshot.js";
+import type { BundleManifest, ImportOptions, ImportResult } from "./types.js";
+import { cacheDir } from "./bundle.js";
+import { logEvent } from "./log.js";
 
-const CACHE_DIR = join(homedir(), ".pi", "cache", "pi-sync");
+export async function runImport(archivePath: string, opts: ImportOptions = {}): Promise<ImportResult> {
+  const started = Date.now();
+  const home = opts.home ?? defaultHome();
+  const logDir = cacheDir(home);
+  await logEvent(logDir, { ts: new Date().toISOString(), op: "import", status: "start", detail: { archivePath } });
+  try {
+    await stat(archivePath); // throws with ENOENT if missing — fine to surface
 
-export interface StatusSummary {
-  totalEvents: number;
-  totalConflicts: number;
-  totalErrors: number;
-  lastSyncMs: number | null;
-  lastConflict: SyncEvent | null;
+    // 1. Validate: single pisync-* root + parseable schema-1 manifest.
+    const names = await listArchive(archivePath);
+    const roots = new Set(names.map((n) => n.split("/")[0]).filter((n) => n.startsWith("pisync-")));
+    if (roots.size !== 1) {
+      throw new Error("Not a pi-sync bundle: expected exactly one pisync-* root directory in the archive.");
+    }
+    const rootName = [...roots][0];
+    const work = await mkdtemp(join(tmpdir(), "pisync-import-"));
+    try {
+      await unpackArchive(archivePath, work);
+      const bundleRoot = join(work, rootName);
+      const raw = JSON.parse(await readFile(join(bundleRoot, "manifest.json"), "utf8"));
+      const v = validateManifest(raw);
+      if (!v.ok) throw new Error(`Invalid bundle manifest: ${v.errors.join("; ")}`);
+      const manifest = v.manifest as BundleManifest;
+
+      // 2. Pre-import safety: back up files we are about to overwrite.
+      const backupDir = join(cacheDir(home), `pre-import-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+      await mkdir(backupDir, { recursive: true });
+      for (const e of manifest.entries) {
+        if (e.kind !== "file") continue; // dirs merge; not backed up
+        const dest = expandTildeWith(e.dest, home);
+        try {
+          await stat(dest);
+          await cp(dest, join(backupDir, e.bundlePath.split("/").join("__")), { recursive: true, dereference: true });
+        } catch { /* didn't exist — nothing to back up */ }
+      }
+
+      // 3. Restore.
+      const restored: string[] = [];
+      const skipped: string[] = [];
+      for (const e of manifest.entries) {
+        const inBundle = join(bundleRoot, e.bundlePath);
+        const dest = expandTildeWith(e.dest, home);
+        try {
+          await stat(inBundle);
+        } catch {
+          skipped.push(e.bundlePath);
+          continue;
+        }
+        if (e.sqlite) {
+          await swapDatabase(inBundle, dest);
+        } else if (e.kind === "dir") {
+          await mkdir(dest, { recursive: true });
+          await copyFiltered(inBundle, dest, BUNDLE_EXCLUDES); // merge/overlay
+        } else {
+          await mkdir(join(dest, ".."), { recursive: true });
+          await copyFiltered(inBundle, dest, []);
+        }
+        restored.push(dest);
+      }
+
+      const result: ImportResult = { restored, skipped, backupDir, durationMs: Date.now() - started };
+      await logEvent(logDir, { ts: new Date().toISOString(), op: "import", status: "done", detail: { restored: restored.length, skipped: skipped.length } });
+      return result;
+    } finally {
+      await rm(work, { recursive: true, force: true });
+    }
+  } catch (err) {
+    await logEvent(logDir, { ts: new Date().toISOString(), op: "import", status: "error", detail: { error: String(err) } });
+    throw err;
+  }
 }
 
-export async function statusSummary(): Promise<StatusSummary> {
-  const events = await readLog(CACHE_DIR);
-  const conflicts = events.filter((e) => e.action === "conflict");
-  const errors = events.filter((e) => e.action === "error");
-  const transfers = events.filter((e) => e.action === "transfer");
-  return {
-    totalEvents: events.length,
-    totalConflicts: conflicts.length,
-    totalErrors: errors.length,
-    lastSyncMs: transfers.length > 0 ? new Date(transfers[transfers.length - 1].ts).getTime() : null,
-    lastConflict: conflicts.length > 0 ? conflicts[conflicts.length - 1] : null,
-  };
-}
+void readdir; // remove if unused
 ```
 
-- [ ] **Step 2: Commit**
+(Delete the `void readdir;` line and unused import — prefer clean imports.)
 
-```bash
-git add src/commands/sync-status.ts
-git commit -m "feat(commands): /sync-status summary"
-```
+- [ ] **Step 4: Run the full bundle test file**
 
----
+Run: `npx vitest run tests/bundle.test.ts`
+Expected: PASS including the round-trip test (`defaultModel` content lands in home2; SQLite `SELECT` returns 42 when sqlite3 present).
 
-## Phase 6: Wire-up and integration
-
-### Task 17: index.ts (entry)
-
-**Files:**
-- Create: `src/index.ts`
-
-- [ ] **Step 1: Implement `src/index.ts`**
+- [ ] **Step 5: Rewrite `src/index.ts` — command dispatch**
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
-import { loadConfig } from "./config.js";
-import { advertise } from "./mdns.js";
-import { fullSync } from "./commands/sync.js";
-import { syncPush } from "./commands/sync-push.js";
-import { syncPull } from "./commands/sync-pull.js";
-import { listPeers } from "./commands/sync-peers.js";
-import { setupPeer } from "./commands/sync-setup.js";
-import { statusSummary } from "./commands/sync-status.js";
-import type { PeerInfo } from "./types.js";
+import { expandTildeWith, defaultHome } from "./paths.js";
+import { runExtract } from "./bundle.js";
+import { runImport } from "./restore.js";
+import { cacheDir } from "./bundle.js";
+import { readLog } from "./log.js";
 
-const MY_ID = randomUUID();
-const MY_NAME = hostname();
+const HELP = `pi-sync v2 — portable pi state
+/pisync extract [dir] [--no-memory] [--no-auth] [--no-agents-skills]
+    Bundle settings, skills, extensions, git package store and LaPis memory DB
+    into ~/Downloads/pisync-<date>.tar.zst (or .tar.gz if zstd missing).
+/pisync import <archive>
+    Restore a bundle on this machine (backs up current state first).
+/pisync
+    This help + last operation.`;
 
 export default function (pi: ExtensionAPI) {
-  // Advertiser is created lazily on session_start and torn down on session_shutdown.
-  // session_shutdown is registered at factory scope so it always fires.
-  let currentAdv: ReturnType<typeof advertise> | null = null;
-
-  pi.on("session_start", async (_event, ctx) => {
-    currentAdv = advertise({
-      id: MY_ID,
-      name: MY_NAME,
-      piVersion: "0.1.0",
-      port: 7333,
-    });
-    ctx.ui.setStatus("pi-sync", "advertising");
-  });
-
-  pi.on("session_shutdown", async () => {
-    currentAdv?.stop();
-    currentAdv = null;
-  });
-
-  // Resolve peer: arg → configured peer (with mDNS enrichment)
-  async function resolvePeer(arg: string | undefined): Promise<PeerInfo | null> {
-    if (arg) {
-      const [host, port] = arg.split(":");
-      return { id: "manual", name: arg, host, port: Number(port ?? 22), piVersion: "unknown", lastSeen: 0 };
-    }
-    const config = await loadConfig();
-    if (!config) return null;
-    const { peers } = await listPeers(3000);
-    const match = peers.find((p) => p.host === config.peer || p.name === config.peer);
-    return match ?? {
-      id: "configured",
-      name: config.peer,
-      host: config.peer,
-      port: config.sshPort,
-      piVersion: "unknown",
-      lastSeen: 0,
-    };
-  }
-
-  pi.registerCommand("sync", {
-    description: "Bidirectional sync with peer",
+  pi.registerCommand("pisync", {
+    description: "Extract pi state to a portable archive / import on another PC",
     handler: async (args, ctx) => {
-      const config = await loadConfig();
-      if (!config) {
-        ctx.ui.notify("Run /sync-setup <remote-host> first.", "error");
+      const [sub, ...rest] = (args ?? "").trim().split(/\s+/).filter(Boolean);
+
+      if (!sub || sub === "help") {
+        const events = await readLog(cacheDir(defaultHome()));
+        const last = events.at(-1);
+        const lastLine = last
+          ? `Last operation: ${last.op} ${last.status} at ${last.ts}`
+          : "No operations yet.";
+        ctx.ui.notify(`${HELP}\n\n${lastLine}`, "info");
         return;
       }
-      const peer = await resolvePeer(args);
-      if (!peer) {
-        ctx.ui.notify("Could not resolve peer.", "error");
+
+      if (sub === "extract") {
+        const flags = rest.filter((a) => a.startsWith("--"));
+        const positional = rest.filter((a) => !a.startsWith("--"));
+        const outDir = positional[0];
+        ctx.ui.setStatus("pi-sync", "extracting…");
+        try {
+          const r = await runExtract({
+            outDir,
+            noMemory: flags.includes("--no-memory"),
+            noAuth: flags.includes("--no-auth"),
+            noAgentsSkills: flags.includes("--no-agents-skills"),
+          });
+          ctx.ui.setStatus("pi-sync", "idle");
+          ctx.ui.notify(
+            `Bundle ready: ${r.archivePath}\n${(r.bytes / 1e6).toFixed(0)} MB in ${(r.durationMs / 1000).toFixed(1)}s (${r.compression}, ${r.entries.length} entries). Copy it to the other PC, then run /pisync import there.`,
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.setStatus("pi-sync", "idle");
+          ctx.ui.notify(`Extract failed: ${err instanceof Error ? err.message : err}`, "error");
+        }
         return;
       }
-      ctx.ui.setStatus("pi-sync", `syncing with ${peer.name}…`);
-      const result = await fullSync(config, peer, (m) => ctx.ui.setStatus("pi-sync", m));
-      ctx.ui.setStatus("pi-sync", "idle");
-      const totalConflicts = result.push.conflicts.length + result.pull.conflicts.length;
-      const totalTransferred = result.push.transferred + result.pull.transferred;
-      if (totalConflicts > 0) {
-        ctx.ui.notify(`Synced ${totalTransferred} files. ${totalConflicts} conflict(s).`, "warning");
-      } else if (result.push.error || result.pull.error) {
-        ctx.ui.notify(`Sync failed: ${result.push.error ?? result.pull.error}`, "error");
-      } else {
-        ctx.ui.notify(`Synced ${totalTransferred} files with ${peer.name}.`, "info");
+
+      if (sub === "import") {
+        const archive = rest[0];
+        if (!archive) {
+          ctx.ui.notify("Usage: /pisync import <path-to-archive>", "error");
+          return;
+        }
+        ctx.ui.setStatus("pi-sync", "importing…");
+        try {
+          const r = await runImport(expandTildeWith(archive, defaultHome()));
+          ctx.ui.setStatus("pi-sync", "idle");
+          ctx.ui.notify(
+            `Imported ${r.restored.length} entries (skipped ${r.skipped.length}).\nPre-import backup: ${r.backupDir}\nRestart pi to load everything.`,
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.setStatus("pi-sync", "idle");
+          ctx.ui.notify(`Import failed: ${err instanceof Error ? err.message : err}`, "error");
+        }
+        return;
       }
-    },
-  });
 
-  pi.registerCommand("sync-push", {
-    description: "One-way push to peer",
-    handler: async (args, ctx) => {
-      const config = await loadConfig();
-      const peer = await resolvePeer(args);
-      if (!config || !peer) return ctx.ui.notify("config or peer missing", "error");
-      const r = await syncPush(config, peer, (m) => ctx.ui.setStatus("pi-sync", m));
-      ctx.ui.notify(`Pushed ${r.transferred} files.`, r.error ? "error" : "info");
-    },
-  });
-
-  pi.registerCommand("sync-pull", {
-    description: "One-way pull from peer",
-    handler: async (args, ctx) => {
-      const config = await loadConfig();
-      const peer = await resolvePeer(args);
-      if (!config || !peer) return ctx.ui.notify("config or peer missing", "error");
-      const r = await syncPull(config, peer, (m) => ctx.ui.setStatus("pi-sync", m));
-      ctx.ui.notify(`Pulled ${r.transferred} files.`, r.error ? "error" : "info");
-    },
-  });
-
-  pi.registerCommand("sync-peers", {
-    description: "List discovered peers",
-    handler: async (_args, ctx) => {
-      const { peers, hint } = await listPeers();
-      if (peers.length === 0) {
-        ctx.ui.notify(hint ?? "no peers found", "info");
-      } else {
-        const lines = peers.map((p) => `• ${p.name} (${p.host}:${p.port}) — pi ${p.piVersion}`);
-        ctx.ui.notify(`Peers:\n${lines.join("\n")}${hint ? "\n\n" + hint : ""}`, "info");
-      }
-    },
-  });
-
-  pi.registerCommand("sync-setup", {
-    description: "One-time setup against a remote host",
-    handler: async (args, ctx) => {
-      const host = args?.trim();
-      if (!host) return ctx.ui.notify("Usage: /sync-setup <remote-host>", "error");
-      try {
-        await setupPeer(host);
-        ctx.ui.notify(`Setup complete. Peer ${host} configured. Run /sync to start.`, "info");
-      } catch (err) {
-        ctx.ui.notify(`Setup failed: ${err instanceof Error ? err.message : err}`, "error");
-      }
-    },
-  });
-
-  pi.registerCommand("sync-status", {
-    description: "Last sync info, conflicts, errors",
-    handler: async (_args, ctx) => {
-      const s = await statusSummary();
-      const lastSync = s.lastSyncMs ? new Date(s.lastSyncMs).toISOString() : "never";
-      ctx.ui.notify(
-        `Last sync: ${lastSync}\nTransfers: ${s.totalEvents}\nConflicts: ${s.totalConflicts}\nErrors: ${s.totalErrors}`,
-        "info",
-      );
+      ctx.ui.notify(`Unknown subcommand "${sub}".\n\n${HELP}`, "error");
     },
   });
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [ ] **Step 6: Full suite + build**
 
-Run: `cd ~/Documents/GulanesKorp/PiSync && npx tsc --noEmit`
-Expected: errors related to `@earendil-works/pi-coding-agent` types are OK if the package isn't installed locally; otherwise fix.
+Run: `npm test 2>&1 | tail -6 && npm run build 2>&1 | tail -3`
+Expected: all tests PASS, build clean.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/index.ts
-git commit -m "feat(index): register all pi commands"
+git add -A
+git commit -m "feat: runImport + /pisync command dispatch (extract|import|help)"
 ```
 
 ---
 
-### Task 18: README + install instructions
+### Task 9: README rewrite + live smoke test
 
 **Files:**
-- Modify: `README.md`
+- Rewrite: `README.md`
 
-- [ ] **Step 1: Replace the skeleton with full README**
+- [ ] **Step 1: Rewrite `README.md`**
 
-```markdown
-# pi-sync
+````markdown
+# pi-sync v2
 
-Synchronize your pi state (skills, settings, AGENTS.md, memory DB, sessions) between two laptops on the same LAN.
+Extract your pi state — settings, skills (all three locations), extensions, git
+package store, and the LaPis memory DB — into **one portable archive**, and
+import it on another PC. You move the file yourself (USB, scp, cloud).
 
-## How it works
+## What ships
 
-- Each laptop runs this extension as part of pi.
-- Each advertises itself via mDNS as `_pi-sync._tcp.local` on port 7333.
-- When you run `/sync`, the extension rsyncs the relevant paths to the peer over SSH (using a dedicated ed25519 keypair).
-- The SQLite memory DB is snapshotted via `.backup` before transfer and atomic-renamed on the receiver — safe even while pi is running.
-- Conflicts are detected against a per-peer baseline and reported via TUI notification.
+| Source | In bundle |
+|---|---|
+| `~/.pi/agent/{skills,extensions,git,bin}` | `pi/agent/…` |
+| `~/.pi/agent/{settings.json,AGENTS.md,trust.json,auth.json,models.json,models-store.json}` | `pi/agent/…` |
+| `~/.agents/skills` | `agents/skills` |
+| `~/.pi/memory/memory.db` (LaPis) | `memory/memory.db` (consistent snapshot) |
 
-## Install
-
-### On both laptops
-
-```bash
-# Install dependencies
-sudo pacman -S openssh rsync sqlite avahi nss-mdns   # Arch/CachyOS
-
-# Make sure sshd is running (one-time)
-sudo systemctl enable --now sshd
-
-# Clone or copy this repo
-git clone <repo-url> ~/Documents/GulanesKorp/PiSync
-cd ~/Documents/GulanesKorp/PiSync
-npm install
-```
-
-### Link the extension into pi
-
-From `~/Documents/GulanesKorp/PiSync`:
-
-```bash
-npm run build
-# Either symlink into ~/.pi/agent/extensions/:
-ln -s "$(pwd)" ~/.pi/agent/extensions/pi-sync
-# Or add to ~/.pi/agent/settings.json under "extensions":
-#   "extensions": ["/home/<you>/Documents/GulanesKorp/PiSync"]
-```
-
-### One-time setup (run on EACH laptop pointing at the OTHER)
-
-In pi:
-
-```
-/sync-setup <other-laptop>.local
-```
-
-You may be prompted for the remote's SSH password (one-time key install).
+Never ships: sessions, claude-sessions, `*.bak`, `*.db-wal/shm`, `node_modules`,
+`pistats.db`.
 
 ## Use
 
 ```
-/sync                    # full bidirectional sync
-/sync-push <peer>        # this → peer
-/sync-pull <peer>        # peer → this
-/sync-peers              # show discovered peers
-/sync-status             # last sync info
+/pisync extract [dir] [--no-memory] [--no-auth] [--no-agents-skills]
+/pisync import <archive>
+/pisync
 ```
 
-## Run the tests
+Extract writes `~/Downloads/pisync-<date>.tar.zst` (`.tar.gz` if zstd missing).
+Import backs up current state to `~/.pi/cache/pi-sync/pre-import-<ts>/`, restores
+the bundle, and atomically swaps the memory DB. Restart pi afterwards.
+
+## On a PC without pi-sync
+
+The bundle is self-describing — `RESTORE.md` inside has plain-shell restore
+steps (tar + cp + sqlite3).
+
+## Install
 
 ```bash
-cd ~/Documents/GulanesKorp/PiSync
+git clone <repo-url> ~/Documents/GulanesKorp/PiSync
+cd ~/Documents/GulanesKorp/PiSync && npm install
+ln -s "$(pwd)/src" ~/.pi/agent/extensions/pi-sync   # or add src/index.ts to extensions in settings.json
+```
+
+Requires: `tar` (any modern distro), `sqlite3` (for the memory DB), `zstd`
+(optional — gzip fallback). Restart pi or `/reload`.
+
+## Security
+
+`auth.json` (API keys) ships by default. Treat the archive like a credential
+file; use `--no-auth` to leave it out.
+
+## Tests
+
+```bash
 npm test
 ```
+````
 
-## Files
+- [ ] **Step 2: Live smoke test (real HOME, real DB — this is the acceptance run)**
 
-See [SPEC.md](./SPEC.md) for the design, [PLAN.md](./PLAN.md) for the implementation plan.
+Run in pi: `/pisync extract`
+Expected: notify shows `~/Downloads/pisync-<today>.tar.zst`, ~500–800 MB, entries count ≥ 8.
+
+```bash
+tar -tf ~/Downloads/pisync-*.tar.zst | grep -E "manifest.json|RESTORE.md|memory/memory.db|pi/agent/git/" | head
+```
+Expected: all four paths present. Then import into a throwaway HOME:
+
+```bash
+TMP_home=$(mktemp -d)
+npx vitest run tests/bundle.test.ts  # sandboxed round-trip already covers import
+rm -rf "$TMP_home"
 ```
 
-- [ ] **Step 2: Commit**
+(Do NOT run `/pisync import` against the real HOME during the smoke test — the sandboxed round-trip test in `tests/bundle.test.ts` is the import verification.)
+
+- [ ] **Step 3: Final commit**
 
 ```bash
 git add README.md
-git commit -m "docs: full README with install + usage"
+git commit -m "docs: v2 README — extract/import usage"
 ```
 
 ---
 
-### Task 19: Integration smoke test (loopback SSH)
+## Self-Review (done during planning)
 
-**Files:**
-- Create: `tests/integration.test.ts` (skipped if loopback SSH not set up)
-
-- [ ] **Step 1: Write the integration test**
-
-`tests/integration.test.ts`:
-
-```typescript
-import { describe, it, expect, beforeAll } from "vitest";
-import { execFileSync } from "node:child_process";
-import { runSync } from "../src/sync.js";
-
-const HAS_SSH_LOOPBACK = (() => {
-  try {
-    execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "localhost", "true"], {
-      stdio: "ignore",
-    });
-    return true;
-  } catch {
-    return false;
-  }
-})();
-
-describe.skipIf(!HAS_SSH_LOOPBACK)("integration", () => {
-  beforeAll(() => {
-    // Sanity: rsync available
-    execFileSync("rsync", ["--version"], { stdio: "ignore" });
-  });
-
-  it("runs sync without throwing against localhost", async () => {
-    const result = await runSync({
-      config: {
-        peer: "localhost",
-        sshKey: "~/.ssh/id_ed25519",
-        sshPort: 22,
-        rsyncPort: 22,
-        syncPaths: ["default"],
-        excludePatterns: [],
-      },
-      peer: {
-        id: "loopback",
-        name: "loopback",
-        host: "localhost",
-        port: 22,
-        piVersion: "test",
-        lastSeen: 0,
-      },
-      direction: "push",
-    });
-    // We don't assert specific counts — sync may transfer 0 files if the
-    // ~/.pi/agent/ tree on this box doesn't exist on loopback. We just want
-    // to confirm the orchestrator doesn't crash.
-    expect(result.error).toBeUndefined();
-  }, 60_000);
-});
-```
-
-- [ ] **Step 2: Run; expect skip if loopback SSH isn't available, pass if it is**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test`
-Expected: All unit tests pass; integration test skipped unless loopback SSH is configured.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add tests/integration.test.ts
-git commit -m "test(integration): loopback SSH smoke test (skipped if unavailable)"
-```
-
----
-
-### Task 20: Final verification
-
-- [ ] **Step 1: Full test suite passes**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm test`
-Expected: All tests pass; integration test may be skipped.
-
-- [ ] **Step 2: TypeScript compiles cleanly**
-
-Run: `cd ~/Documents/GulanesKorp/PiSync && npm run build`
-Expected: emits `dist/` with no errors.
-
-- [ ] **Step 3: Smoke-load the extension in pi**
-
-Run from this project:
-
-```bash
-# from this dir
-pi -e ./src/index.ts
-```
-
-Then in pi, type `/sync-peers` — should respond "no peers found" (expected; nothing else advertising on your LAN right now).
-
-- [ ] **Step 4: Final commit**
-
-```bash
-git add -A
-git status
-git commit -m "chore: final verification pass" --allow-empty
-```
-
----
-
-## Acceptance criteria (from SPEC.md)
-
-1. `/sync` against a configured peer brings all files in the sync set identical on both sides
-2. Memory DB sync is safe under live reads/writes (uses `.backup` API)
-3. Real conflicts are emitted as `notify` warnings (not just any transfer)
-4. Concurrent syncs are prevented by `sync.lock` with stale-PID recovery
-5. Mid-transfer interruption is recoverable (rsync is delta-aware)
-6. Every transfer/conflict/error is logged to `log.jsonl`
+1. **Spec coverage:** bundle contents table → `paths.ts` (Task 2); excludes → `BUNDLE_EXCLUDES` (Task 2); symlink deref + copy filter → Task 3; manifest schema/validate → Task 4; explicit-compressor + `.part` atomicity → Task 5; DB snapshot (existing) + stale-WAL swap → Task 6; pre-flight disk space + zstd probe + RESTORE.md → Task 7; import validation/backup/restore/report → Task 8; commands + help + status → Task 8; docs → Task 9. `--no-memory/--no-auth/--no-agents-skills` flags → Tasks 7/8.
+2. **Placeholder scan:** no TBDs; every code step has full code.
+3. **Type consistency:** `copyFiltered(src,dest,excludes)→{files,bytes}` used in Tasks 7/8; `swapDatabase(staged,dest)` Task 6→8; `BundleManifestEntry.files/bytes` Task 2→4→7; `runExtract(opts)`/`runImport(archive,opts)` signatures consistent between tests and impl; `OperationEvent` Task 2→7.
