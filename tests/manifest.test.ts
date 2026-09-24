@@ -1,69 +1,64 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildManifest, type ManifestEntry, DEFAULT_EXCLUDES, matchesGlob } from "../src/manifest.js";
+import { copyFiltered, matchesGlob } from "../src/manifest.js";
 
 let root: string;
+let srcDir: string;
+let destDir: string;
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "pi-sync-mf-"));
-  await mkdir(join(root, "skills/a"), { recursive: true });
-  await mkdir(join(root, "skills/b"), { recursive: true });
-  await writeFile(join(root, "skills/a/SKILL.md"), "a");
-  await writeFile(join(root, "skills/b/SKILL.md"), "b");
-  await writeFile(join(root, "AGENTS.md"), "agents");
-  await writeFile(join(root, "auth.json"), "{}");
-  await writeFile(join(root, "settings.json"), "{}");
-  await writeFile(join(root, "models-store.json.bak"), "bak");
+  root = await mkdtemp(join(tmpdir(), "pisync-copy-"));
+  srcDir = join(root, "src");
+  destDir = join(root, "dest");
+  await mkdir(srcDir, { recursive: true });
+  await mkdir(destDir, { recursive: true });
 });
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-describe("manifest", () => {
-  it("walks the tree and returns relative entries", async () => {
-    const m = await buildManifest(root);
-    const paths = m.map((e) => e.relPath).sort();
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        "AGENTS.md",
-        "settings.json",
-        "skills/a/SKILL.md",
-        "skills/b/SKILL.md",
-      ]),
-    );
+describe("copyFiltered", () => {
+  it("copies plain trees recursively", async () => {
+    await mkdir(join(srcDir, "a/b"), { recursive: true });
+    await writeFile(join(srcDir, "a/one.txt"), "one");
+    await writeFile(join(srcDir, "a/b/two.txt"), "two");
+    const stats = await copyFiltered(srcDir, join(destDir, "out"), []);
+    expect(stats.files).toBe(2);
+    expect(await readFile(join(destDir, "out/a/b/two.txt"), "utf8")).toBe("two");
   });
 
-  it("excludes auth.json by default", async () => {
-    const m = await buildManifest(root);
-    expect(m.find((e) => e.relPath === "auth.json")).toBeUndefined();
+  it("skips excluded files and directories", async () => {
+    await mkdir(join(srcDir, "node_modules/pkg"), { recursive: true });
+    await mkdir(join(srcDir, "claude-sessions"), { recursive: true });
+    await writeFile(join(srcDir, "keep.txt"), "k");
+    await writeFile(join(srcDir, "old.bak"), "b");
+    await writeFile(join(srcDir, "node_modules/pkg/index.js"), "n");
+    await writeFile(join(srcDir, "claude-sessions/s.json"), "c");
+    await copyFiltered(srcDir, join(destDir, "out"), ["**/node_modules/**", "**/*.bak", "**/claude-sessions/**"]);
+    expect(await readFile(join(destDir, "out/keep.txt"), "utf8")).toBe("k");
+    await expect(readFile(join(destDir, "out/old.bak"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(destDir, "out/node_modules/pkg/index.js"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(destDir, "out/claude-sessions/s.json"), "utf8")).rejects.toThrow();
   });
 
-  it("excludes *.bak by default", async () => {
-    const m = await buildManifest(root);
-    expect(m.find((e) => e.relPath === "models-store.json.bak")).toBeUndefined();
+  it("dereferences symlinks into real files", async () => {
+    await writeFile(join(root, "target.txt"), "real");
+    await symlink(join(root, "target.txt"), join(srcDir, "link.txt"));
+    await copyFiltered(srcDir, join(destDir, "out"), []);
+    const copied = await readFile(join(destDir, "out/link.txt"), "utf8");
+    expect(copied).toBe("real");
   });
 
-  it("records size and mtime", async () => {
-    const m = await buildManifest(root);
-    const a = m.find((e) => e.relPath === "AGENTS.md");
-    expect(a).toBeDefined();
-    expect(a!.size).toBeGreaterThan(0);
-    expect(a!.mtimeMs).toBeGreaterThan(0);
+  it("returns zero stats for a missing source", async () => {
+    const stats = await copyFiltered(join(srcDir, "does-not-exist"), join(destDir, "out"), []);
+    expect(stats).toEqual({ files: 0, bytes: 0 });
   });
+});
 
-  it("adds an extra exclude pattern", async () => {
-    const m = await buildManifest(root, { extra: ["skills/a/**"] });
-    expect(m.find((e) => e.relPath.startsWith("skills/a"))).toBeUndefined();
-  });
-
-  it("DEFAULT_EXCLUDES contains auth.json", () => {
-    expect(DEFAULT_EXCLUDES).toContain("auth.json");
-    expect(DEFAULT_EXCLUDES.some((p) => p.endsWith(".bak"))).toBe(true);
-  });
-
+describe("matchesGlob", () => {
   it("matchesGlob handles ** and * correctly", () => {
     expect(matchesGlob("skills/a/foo.md", "skills/**")).toBe(true);
     expect(matchesGlob("skills/a/foo.md", "skills/*/foo.md")).toBe(true);
