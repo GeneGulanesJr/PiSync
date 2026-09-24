@@ -4,6 +4,13 @@ export interface SshOpts {
   port: number;
   connectTimeout?: number;
   command?: string;
+  /**
+   * When true, omit `opts.host` from the returned argv. Used when building
+   * the `-e` value for rsync — rsync appends the host itself from the
+   * destination argument, so including it here would duplicate the host
+   * and the remote shell would try to execute the bare hostname.
+   */
+  skipHost?: boolean;
 }
 
 export function buildSshArgs(opts: SshOpts): string[] {
@@ -13,7 +20,7 @@ export function buildSshArgs(opts: SshOpts): string[] {
   args.push("-o", "BatchMode=yes");
   args.push("-o", `ConnectTimeout=${opts.connectTimeout ?? 5}`);
   args.push("-o", "StrictHostKeyChecking=accept-new");
-  args.push(opts.host);
+  if (!opts.skipHost) args.push(opts.host);
   if (opts.command !== undefined) args.push(opts.command);
   return args;
 }

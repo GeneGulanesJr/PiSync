@@ -79,6 +79,7 @@ export async function runSync(opts: SyncOpts): Promise<SyncResult> {
       keyPath: resolve(config.sshKey.startsWith("~") ? config.sshKey.replace("~", homedir()) : config.sshKey),
       port: config.rsyncPort,
       connectTimeout: 5,
+      skipHost: true, // rsync appends the host itself from src/dst
     });
     const sshCmd = `ssh ${sshArgs.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
     const rsyncArgs: string[] = [
@@ -188,19 +189,29 @@ async function transferMemoryDb(
   config: PiSyncConfig,
   localSnapshot: string,
 ): Promise<void> {
+  const resolvedKey = resolve(config.sshKey.startsWith("~") ? config.sshKey.replace("~", homedir()) : config.sshKey);
+  // rsync transport: skip host (rsync appends it from src/dst)
+  const rsyncSshArgs = buildSshArgs({
+    host: peer.host,
+    keyPath: resolvedKey,
+    port: config.sshPort,
+    connectTimeout: 5,
+    skipHost: true,
+  });
+  const rsyncSshCmd = `ssh ${rsyncSshArgs.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
+  // direct ssh: include host (no rsync to add it)
   const sshArgs = buildSshArgs({
     host: peer.host,
-    keyPath: resolve(config.sshKey.startsWith("~") ? config.sshKey.replace("~", homedir()) : config.sshKey),
+    keyPath: resolvedKey,
     port: config.sshPort,
     connectTimeout: 5,
   });
-  const sshCmd = `ssh ${sshArgs.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
   if (direction === "push") {
-    await execFileP("rsync", ["-a", "-e", sshCmd, localSnapshot, `${peer.host}:/tmp/mem-receive.db`]);
+    await execFileP("rsync", ["-a", "-e", rsyncSshCmd, localSnapshot, `${peer.host}:/tmp/mem-receive.db`]);
     // Atomic rename on receiver
     await execFileP("ssh", [...sshArgs, "mv", "/tmp/mem-receive.db", MEMORY_DB]);
   } else {
-    await execFileP("rsync", ["-a", "-e", sshCmd, `${peer.host}:${MEMORY_DB}`, localSnapshot]);
+    await execFileP("rsync", ["-a", "-e", rsyncSshCmd, `${peer.host}:${MEMORY_DB}`, localSnapshot]);
     await atomicReplace(localSnapshot, MEMORY_DB);
   }
 }
